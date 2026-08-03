@@ -14,9 +14,9 @@ export const db = new Pool({
 });
 
 db.on('connect', () => {
-  console.log('📦 Conectado exitosamente a PostgreSQL');
+  console.log('📦 Conectado exitosamente a PostgreSQL (TypeScript)');
 });
 
-db.on('error', (err) => {
+db.on('error', (err: Error) => {
   console.error('❌ Error insospechado en cliente de PostgreSQL:', err);
 });

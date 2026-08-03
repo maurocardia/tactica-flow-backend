@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import dotenv from 'dotenv';
-import { TacticaApiService } from './tacticaApi.service.js';
+import { TacticaApiService, TacticaCredentials } from './tacticaApi.service.js';
 
 dotenv.config();
 
@@ -8,8 +8,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || 'dummy_key'
 });
 
-// Definición de Herramientas (Function Calling) disponibles para el Agente IA de Táctica
-const TACTICA_TOOLS = [
+const TACTICA_TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
@@ -61,12 +60,13 @@ const TACTICA_TOOLS = [
 ];
 
 export class OpenAiService {
-  /**
-   * Procesa un mensaje de usuario a través del agente conversacional de OpenAI
-   */
-  static async processMessage(userMessage, conversationHistory = [], tacticaCredentials = {}) {
+  static async processMessage(
+    userMessage: string,
+    conversationHistory: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [],
+    tacticaCredentials: TacticaCredentials = {}
+  ): Promise<string> {
     try {
-      const messages = [
+      const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
         {
           role: 'system',
           content: `Eres el Asistente Virtual Inteligente de Tactica Flow integrado con Táctica ERP.
@@ -86,12 +86,11 @@ export class OpenAiService {
 
       const responseMessage = response.choices[0].message;
 
-      // Si la IA decide llamar una función
       if (responseMessage.tool_calls) {
         for (const toolCall of responseMessage.tool_calls) {
           const functionName = toolCall.function.name;
           const args = JSON.parse(toolCall.function.arguments);
-          let functionResult = null;
+          let functionResult: any = null;
 
           if (functionName === 'consultar_inventario') {
             functionResult = await TacticaApiService.getProducts(tacticaCredentials, { Descripcion: args.descripcion });
@@ -105,7 +104,6 @@ export class OpenAiService {
             functionResult = await TacticaApiService.createContact(tacticaCredentials, args);
           }
 
-          // Segundollamado a la IA con el resultado de la herramienta
           messages.push(responseMessage);
           messages.push({
             role: 'tool',
@@ -119,10 +117,10 @@ export class OpenAiService {
           messages
         });
 
-        return secondResponse.choices[0].message.content;
+        return secondResponse.choices[0].message.content || 'Sin respuesta';
       }
 
-      return responseMessage.content;
+      return responseMessage.content || 'Sin respuesta';
     } catch (error) {
       console.error('❌ Error en OpenAiService:', error);
       return 'Lo siento, ocurrió un error al procesar tu mensaje. Un asesor te atenderá pronto.';

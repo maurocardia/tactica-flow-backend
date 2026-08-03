@@ -1,20 +1,19 @@
-import axios from 'axios';
+import axios, { AxiosRequestConfig } from 'axios';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
 const TACTICA_API_URL = process.env.TACTICA_API_URL || 'http://localhost:3000/api';
 
-/**
- * Servicio proxy para conectar Tactica Flow con la API .NET / Backend de Táctica ERP
- */
+export interface TacticaCredentials {
+  usuario?: string;
+  contrasena?: string;
+}
+
 export class TacticaApiService {
-  /**
-   * Helper base para realizar peticiones HTTP a Táctica
-   */
-  static async request(endpoint, method = 'GET', data = {}, headers = {}) {
+  private static async request<T = any>(endpoint: string, method: 'GET' | 'POST' = 'GET', data: any = {}, headers: any = {}): Promise<T> {
     try {
-      const config = {
+      const config: AxiosRequestConfig = {
         method,
         url: `${TACTICA_API_URL}${endpoint}`,
         headers: {
@@ -26,55 +25,49 @@ export class TacticaApiService {
 
       const response = await axios(config);
       return response.data;
-    } catch (error) {
+    } catch (error: any) {
       console.error(`❌ Error en TacticaApiService (${endpoint}):`, error.response?.data || error.message);
       throw error.response?.data || error;
     }
   }
 
-  // --- MÓDULO EMPRESAS ---
-  static async getCompanies(credentials, params = {}) {
+  static async getCompanies(credentials: TacticaCredentials, params: Record<string, any> = {}) {
     return this.request('/Tactica/Empresas', 'GET', { ...params, ...credentials });
   }
 
-  static async createCompany(credentials, companyData) {
+  static async createCompany(credentials: TacticaCredentials, companyData: Record<string, any>) {
     return this.request('/Tactica/CrearEmpresas', 'POST', { ...companyData, ...credentials });
   }
 
-  // --- MÓDULO CONTACTOS ---
-  static async getContacts(credentials, params = {}) {
+  static async getContacts(credentials: TacticaCredentials, params: Record<string, any> = {}) {
     return this.request('/Tactica/Contactos', 'GET', { ...params, ...credentials });
   }
 
-  static async createContact(credentials, contactData) {
+  static async createContact(credentials: TacticaCredentials, contactData: Record<string, any>) {
     return this.request('/Tactica/CrearContactos', 'POST', { ...contactData, ...credentials });
   }
 
-  // --- MÓDULO SOPORTE ---
-  static async getSupports(credentials, params = {}) {
+  static async getSupports(credentials: TacticaCredentials, params: Record<string, any> = {}) {
     return this.request('/Tactica/Soporte', 'POST', { ...params, ...credentials });
   }
 
-  static async createSupport(credentials, supportData) {
+  static async createSupport(credentials: TacticaCredentials, supportData: Record<string, any>) {
     return this.request('/Tactica/CrearSoporte', 'POST', { ...supportData, ...credentials });
   }
 
-  // --- MÓDULO PRODUCTOS / STOCK ---
-  static async getProducts(credentials, params = {}) {
+  static async getProducts(credentials: TacticaCredentials, params: Record<string, any> = {}) {
     return this.request('/Tactica/Productos', 'POST', { ...params, ...credentials });
   }
 
-  // --- MÓDULO PRESUPUESTOS ---
-  static async getPresupuestos(credentials, params = {}) {
+  static async getPresupuestos(credentials: TacticaCredentials, params: Record<string, any> = {}) {
     return this.request('/Tactica/Presupuestos', 'POST', { ...params, ...credentials });
   }
 
-  static async createPresupuesto(credentials, budgetData) {
+  static async createPresupuesto(credentials: TacticaCredentials, budgetData: Record<string, any>) {
     return this.request('/Tactica/CrearPresupuesto', 'POST', { ...budgetData, ...credentials });
   }
 
-  // --- MÓDULO ACTIVIDADES ---
-  static async createActivity(credentials, activityData) {
+  static async createActivity(credentials: TacticaCredentials, activityData: Record<string, any>) {
     return this.request('/Tactica/CrearActividades', 'POST', { ...activityData, ...credentials });
   }
 }

@@ -1,6 +1,6 @@
-import express from 'express';
+import express, { Request, Response } from 'express';
 import http from 'http';
-import { Server } from 'socket.io';
+import { Server, Socket } from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import apiRoutes from './routes/api.routes.js';
@@ -24,10 +24,10 @@ app.use(express.json());
 app.use('/api', apiRoutes);
 
 // Socket.io Connection
-io.on('connection', (socket) => {
+io.on('connection', (socket: Socket) => {
   console.log(`🔌 Cliente conectado a Socket.io: ${socket.id}`);
 
-  socket.on('join_chat', (chatId) => {
+  socket.on('join_chat', (chatId: string) => {
     socket.join(`chat_${chatId}`);
     console.log(`👤 Usuario se unió al chat: chat_${chatId}`);
   });
@@ -37,10 +37,9 @@ io.on('connection', (socket) => {
   });
 });
 
-// Export io so services can emit events
 export { io };
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`🚀 Tactica Flow Backend corriendo en el puerto ${PORT}`);
+  console.log(`🚀 Tactica Flow Backend (TypeScript) corriendo en puerto ${PORT}`);
 });
