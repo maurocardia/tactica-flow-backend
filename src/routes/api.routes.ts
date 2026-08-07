@@ -2,6 +2,9 @@ import { Router, Request, Response } from 'express';
 import { TacticaApiService } from '../services/tacticaApi.service.js';
 import { OpenAiService } from '../services/openai.service.js';
 import { BotEngineService } from '../services/botEngine.service.js';
+import { KeywordRuleService, type RuleAction } from '../services/keywordRule.service.js';
+import { ConversationService, type MessageSender } from '../services/conversation.service.js';
+import { io } from '../server.js';
 
 const router = Router();
 
@@ -61,6 +64,207 @@ router.post('/ai/chat', async (req: Request, res: Response) => {
     res.json({ reply: aiResponse });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al procesar consulta de IA' });
+  }
+});
+
+// Conversation Management Endpoints
+router.get('/conversations', async (req: Request, res: Response) => {
+  try {
+    res.json(await ConversationService.listConversations());
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al obtener conversaciones' });
+  }
+});
+
+router.get('/conversations/:id/messages', async (req: Request, res: Response) => {
+  try {
+    const conversationId = Number(req.params.id);
+    const messages = await ConversationService.getMessages(conversationId);
+
+    if (messages === null) {
+      return res.status(404).json({ error: 'Conversación no encontrada' });
+    }
+
+    res.json(messages);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al obtener mensajes' });
+  }
+});
+
+router.post('/conversations/:id/messages', async (req: Request, res: Response) => {
+  try {
+    const conversationId = Number(req.params.id);
+    const { text, sender = 'agent' } = req.body;
+
+    // Validate text
+    if (!text || typeof text !== 'string' || text.trim() === '') {
+      return res.status(400).json({ error: 'El campo "text" es obligatorio y debe ser una cadena no vacía' });
+    }
+
+    // Check conversation exists
+    const conversation = await ConversationService.getConversation(conversationId);
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversación no encontrada' });
+    }
+
+    // Add customer/agent message
+    const result = await ConversationService.addMessage(conversationId, sender as MessageSender, text.trim());
+    if (!result) {
+      return res.status(404).json({ error: 'Conversación no encontrada' });
+    }
+
+    const responseMessages = [result.message];
+
+    // Emit new message to the chat room
+    io.to(`chat_${conversationId}`).emit('new_message', result.message);
+    // Broadcast conversation update to everyone
+    io.emit('conversation_updated', result.conversation);
+
+    // Bot auto-reply if customer message in bot mode
+    if (sender === 'customer' && conversation.status === 'bot') {
+      const botResult = await BotEngineService.processIncomingMessage(
+        text.trim(),
+        conversation.phone,
+        [],
+        {}
+      );
+
+      const botReplyResult = await ConversationService.addMessage(
+        conversationId,
+        'bot',
+        botResult.replyText
+      );
+
+      if (botReplyResult) {
+        responseMessages.push(botReplyResult.message);
+        // Emit bot message to the chat room
+        io.to(`chat_${conversationId}`).emit('new_message', botReplyResult.message);
+        // Broadcast conversation update to everyone
+        io.emit('conversation_updated', botReplyResult.conversation);
+      }
+    }
+
+    res.json({ messages: responseMessages });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al procesar el mensaje' });
+  }
+});
+
+// Keyword Rule Management Endpoints
+router.get('/bot/rules', async (req: Request, res: Response) => {
+  try {
+    res.json(await KeywordRuleService.listRules());
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al obtener las reglas' });
+  }
+});
+
+router.post('/bot/rules', async (req: Request, res: Response) => {
+  try {
+    const { name, keywords, replyText, action, isActive } = req.body;
+
+    // Validate name
+    if (!name || typeof name !== 'string' || name.trim() === '') {
+      return res.status(400).json({ error: 'El campo "name" es obligatorio y debe ser una cadena no vacía' });
+    }
+
+    // Validate keywords
+    if (!Array.isArray(keywords) || keywords.length === 0) {
+      return res.status(400).json({ error: 'El campo "keywords" debe ser un array no vacío' });
+    }
+
+    const trimmedKeywords = keywords.map((kw: any) => (typeof kw === 'string' ? kw.trim() : '')).filter((kw: string) => kw.length > 0);
+    if (trimmedKeywords.length === 0) {
+      return res.status(400).json({ error: 'El campo "keywords" debe contener al menos una palabra clave no vacía' });
+    }
+
+    // Validate replyText
+    if (!replyText || typeof replyText !== 'string' || replyText.trim() === '') {
+      return res.status(400).json({ error: 'El campo "replyText" es obligatorio y debe ser una cadena no vacía' });
+    }
+
+    const createdRule = await KeywordRuleService.createRule({
+      name,
+      keywords: trimmedKeywords,
+      replyText,
+      action: action as RuleAction | undefined,
+      isActive
+    });
+
+    res.status(201).json(createdRule);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al crear la regla' });
+  }
+});
+
+router.put('/bot/rules/:id', async (req: Request, res: Response) => {
+  try {
+    const id = typeof req.params.id === 'string' ? req.params.id : String(req.params.id);
+    const { name, keywords, replyText, action, isActive } = req.body;
+
+    // Validate each field if present
+    if (name !== undefined) {
+      if (typeof name !== 'string' || name.trim() === '') {
+        return res.status(400).json({ error: 'El campo "name" debe ser una cadena no vacía' });
+      }
+    }
+
+    let trimmedKeywords: string[] | undefined;
+    if (keywords !== undefined) {
+      if (!Array.isArray(keywords) || keywords.length === 0) {
+        return res.status(400).json({ error: 'El campo "keywords" debe ser un array no vacío' });
+      }
+
+      trimmedKeywords = keywords.map((kw: any) => (typeof kw === 'string' ? kw.trim() : '')).filter((kw: string) => kw.length > 0);
+      if (trimmedKeywords.length === 0) {
+        return res.status(400).json({ error: 'El campo "keywords" debe contener al menos una palabra clave no vacía' });
+      }
+    }
+
+    if (replyText !== undefined) {
+      if (typeof replyText !== 'string' || replyText.trim() === '') {
+        return res.status(400).json({ error: 'El campo "replyText" debe ser una cadena no vacía' });
+      }
+    }
+
+    const updateData: Partial<{
+      name: string;
+      keywords: string[];
+      replyText: string;
+      action: RuleAction;
+      isActive: boolean;
+    }> = {};
+
+    if (name !== undefined) updateData.name = name;
+    if (trimmedKeywords !== undefined) updateData.keywords = trimmedKeywords;
+    if (replyText !== undefined) updateData.replyText = replyText;
+    if (action !== undefined) updateData.action = action as RuleAction;
+    if (isActive !== undefined) updateData.isActive = isActive;
+
+    const updatedRule = await KeywordRuleService.updateRule(id, updateData);
+
+    if (!updatedRule) {
+      return res.status(404).json({ error: 'Regla no encontrada' });
+    }
+
+    res.json(updatedRule);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar la regla' });
+  }
+});
+
+router.delete('/bot/rules/:id', async (req: Request, res: Response) => {
+  try {
+    const id = typeof req.params.id === 'string' ? req.params.id : String(req.params.id);
+    const deleted = await KeywordRuleService.deleteRule(id);
+
+    if (!deleted) {
+      return res.status(404).json({ error: 'Regla no encontrada' });
+    }
+
+    res.status(204).send();
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al eliminar la regla' });
   }
 });
 

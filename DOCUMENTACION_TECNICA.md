@@ -59,114 +59,40 @@ Plataforma de comunicación empresarial inteligente (estilo BlueTicks para Whats
 
 ## 4. Esquema de Base de Datos (PostgreSQL)
 
+> **Estado actual (implementado):** esquema simplificado, sin `tenants`/`users`/`whatsapp_sessions`/`whatsapp_contacts` — la app corre hoy para una sola empresa, sin auth. Se crea solo al arrancar el servidor (`initDatabase()` en `src/config/db.ts`, `CREATE TABLE IF NOT EXISTS`).
+
 ```sql
--- 1. Empresas / Tenats
-CREATE TABLE tenants (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    tactica_client_id VARCHAR(255),
-    is_active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+CREATE TABLE keyword_rules (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    keywords TEXT[] NOT NULL,
+    reply_text TEXT NOT NULL,
+    action TEXT NOT NULL DEFAULT 'STATIC_REPLY', -- STATIC_REPLY | CALL_AI | TACTICA_STOCK_LOOKUP | CREATE_SUPPORT_TICKET
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
--- 2. Usuarios y Roles
-CREATE TYPE user_role AS ENUM ('superadmin', 'admin', 'supervisor', 'agent');
-
-CREATE TABLE users (
-    id SERIAL PRIMARY KEY,
-    tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE,
-    name VARCHAR(255) NOT NULL,
-    email VARCHAR(255) UNIQUE NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    role user_role DEFAULT 'agent',
-    tactica_user VARCHAR(100), -- Usuario de Tactica ERP para auditoría
-    tactica_password VARCHAR(100),
-    is_online BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- 3. Sesiones de WhatsApp
-CREATE TABLE whatsapp_sessions (
-    id SERIAL PRIMARY KEY,
-    tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE,
-    phone_number VARCHAR(50),
-    session_name VARCHAR(100) NOT NULL,
-    status VARCHAR(50) DEFAULT 'DISCONNECTED', -- CONNECTED, DISCONNECTED, QR_READY
-    qr_code TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- 4. Contactos de WhatsApp
-CREATE TABLE whatsapp_contacts (
-    id SERIAL PRIMARY KEY,
-    tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE,
-    whatsapp_id VARCHAR(100) NOT NULL, -- ej: 5491112345678@s.whatsapp.net
-    phone_number VARCHAR(50) NOT NULL,
-    name VARCHAR(255),
-    email VARCHAR(255),
-    tactica_empresa_rec_id VARCHAR(100), -- Enlace a RecId de Empresa en Tactica
-    tactica_contacto_rec_id VARCHAR(100), -- Enlace a RecId de Contacto en Tactica
-    tags TEXT[],
-    notes TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- 5. Conversaciones (Chats)
-CREATE TYPE chat_status AS ENUM ('unassigned', 'assigned', 'bot', 'resolved');
 
 CREATE TABLE conversations (
     id SERIAL PRIMARY KEY,
-    tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE,
-    session_id INT REFERENCES whatsapp_sessions(id),
-    contact_id INT REFERENCES whatsapp_contacts(id),
-    assigned_user_id INT REFERENCES users(id),
-    status chat_status DEFAULT 'unassigned',
-    last_message_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    unread_count INT DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    last_msg TEXT NOT NULL DEFAULT '',
+    last_message_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    unread INT NOT NULL DEFAULT 0,
+    tag TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'bot', 'resolved'))
 );
-
--- 6. Mensajes
-CREATE TYPE message_type AS ENUM ('text', 'image', 'document', 'audio', 'video', 'location', 'system');
-CREATE TYPE message_direction AS ENUM ('inbound', 'outbound');
 
 CREATE TABLE messages (
     id SERIAL PRIMARY KEY,
-    conversation_id INT REFERENCES conversations(id) ON DELETE CASCADE,
-    direction message_direction NOT NULL,
-    sender_type VARCHAR(50), -- 'customer', 'agent', 'bot', 'ai'
-    sender_id INT, -- ID de usuario si es agente
-    type message_type DEFAULT 'text',
-    body TEXT,
-    media_url TEXT,
-    status VARCHAR(50) DEFAULT 'sent', -- sent, delivered, read, failed
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- 7. Flujos de Bots
-CREATE TABLE bot_flows (
-    id SERIAL PRIMARY KEY,
-    tenant_id INT REFERENCES tenants(id) ON DELETE CASCADE,
-    name VARCHAR(255) NOT NULL,
-    description TEXT,
-    trigger_keyword VARCHAR(100),
-    is_active BOOLEAN DEFAULT TRUE,
-    flow_json JSONB NOT NULL, -- Configuración de nodos y decisiones
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- 8. Auditoría y Logs de IA / Táctica
-CREATE TABLE integration_logs (
-    id SERIAL PRIMARY KEY,
-    tenant_id INT REFERENCES tenants(id),
-    conversation_id INT REFERENCES conversations(id),
-    action_type VARCHAR(100), -- 'CREAR_PEDIDO', 'CONSULTAR_STOCK', 'CREAR_SOPORTE'
-    request_payload JSONB,
-    response_payload JSONB,
-    status VARCHAR(50),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    conversation_id INT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    sender TEXT NOT NULL CHECK (sender IN ('customer', 'agent', 'bot')),
+    text TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
+
+> **Visión original / roadmap (no implementado todavía):** el diseño multi-tenant completo con `tenants`, `users` (roles y credenciales de Táctica por usuario), `whatsapp_sessions`, `whatsapp_contacts` (vínculo a RecId de Empresa/Contacto en Táctica), `bot_flows` (flujos visuales) e `integration_logs` (auditoría de acciones contra Táctica) sigue siendo el objetivo a mediano plazo, pero requiere primero autenticación y soporte multi-empresa. Ver "Limitaciones conocidas / próximos pasos" en [CHATBOT.md](CHATBOT.md).
 
 ---
 
@@ -174,9 +100,12 @@ CREATE TABLE integration_logs (
 
 ### 5.1 Servicios de Integración
 
-- `src/services/tacticaApi.service.js`: Comunicación con el API .NET de Táctica ERP.
-- `src/services/openai.service.js`: Agente de IA conversacional con Function Calling (`consultar_inventario`, `crear_ticket_soporte`, `crear_contacto`).
-- `src/services/whatsapp.service.js`: Gestión de conexiones Socket.io y WebSockets con Baileys.
+- `src/services/tacticaApi.service.ts`: Comunicación con el API .NET de Táctica ERP.
+- `src/services/openai.service.ts`: Agente de IA conversacional con Function Calling (`consultar_inventario`, `crear_ticket_soporte`, `crear_contacto`).
+- `src/services/keywordRule.service.ts`: CRUD de reglas por palabra clave (Postgres).
+- `src/services/conversation.service.ts`: Conversaciones y mensajes, con eventos en tiempo real vía Socket.io (Postgres).
+- `src/services/botEngine.service.ts`: Orquesta el motor del bot — reglas por palabra clave primero, IA como fallback.
+- `whatsapp.service.ts` (**pendiente**): Baileys está instalado como dependencia pero todavía no hay servicio que reciba mensajes reales de WhatsApp; hoy todo se prueba vía API/inbox.
 
 ---
 
