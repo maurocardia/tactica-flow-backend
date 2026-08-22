@@ -5,7 +5,7 @@ Documentación de lo construido para el motor de chatbot: reglas por palabra cla
 ## 1. Qué hace hoy
 
 - Responde mensajes automáticamente por **reglas de palabras clave** (configurables en runtime, ya no hardcodeadas).
-- Si ninguna regla matchea, cae a un **agente de IA (OpenAI, function calling)** que puede consultar stock, crear tickets de soporte y crear contactos directamente en Táctica ERP.
+- Si ninguna regla matchea, cae a un **agente de IA (Vercel AI SDK + Gemini, function calling)** que puede consultar stock, crear tickets de soporte y crear contactos directamente en Táctica ERP.
 - Expone una **API de conversaciones y mensajes** con eventos en tiempo real por Socket.io (para el inbox del frontend).
 - Todo persiste en **PostgreSQL** (antes vivía en memoria y se perdía al reiniciar).
 - **No** está conectado a WhatsApp real todavía (Baileys está instalado pero sin usar) — todo se prueba vía API/inbox.
@@ -19,7 +19,7 @@ src/
 │   └── db.ts                        # Pool de Postgres, esquema (CREATE TABLE IF NOT EXISTS), initDatabase()
 ├── services/
 │   ├── botEngine.service.ts         # orquesta: reglas → si no matchea, IA
-│   ├── openai.service.ts            # agente de IA + function calling hacia Táctica
+│   ├── ai.service.ts                # agente de IA (Vercel AI SDK + Gemini) + function calling hacia Táctica
 │   ├── tacticaApi.service.ts        # cliente HTTP del API .NET de Táctica ERP
 │   ├── keywordRule.service.ts       # CRUD de reglas por palabra clave (Postgres)
 │   └── conversation.service.ts      # conversaciones + mensajes (Postgres)
@@ -32,7 +32,14 @@ src/
 `BotEngineService.processIncomingMessage(texto, telefono, historial, credencialesTactica)`:
 
 1. Busca entre las reglas **activas** (`KeywordRuleService.listActiveRules()`) si el texto contiene alguna palabra clave. Si matchea, responde con el `replyText` fijo de la regla (`source: 'KEYWORD_RULE'`).
-2. Si ninguna regla matchea, llama a `OpenAiService.processMessage(...)`, que usa GPT-4o-mini con 3 funciones disponibles: `consultar_inventario`, `crear_ticket_soporte`, `crear_contacto` — todas ejecutan una llamada real a `TacticaApiService` (`source: 'AI_AGENT'`).
+2. Si ninguna regla matchea, llama a `AIService.processMessage(...)`, que usa el modelo de Gemini configurado (`GEMINI_MODEL`, por defecto `gemini-2.0-flash`) vía Vercel AI SDK (`ai` + `@ai-sdk/google`), con 3 tools disponibles definidas con Zod: `consultar_inventario`, `crear_ticket_soporte`, `crear_contacto` — todas ejecutan una llamada real a `TacticaApiService`, encadenables hasta `maxSteps: 3` (`source: 'AI_AGENT'`).
+
+### Motor de IA (`ai.service.ts`)
+
+- Controlado por `AI_PROVIDER` en `.env` — hoy solo soporta `gemini` (si se pone otro valor, responde un mensaje de fallback y lo loguea como error). Pensado para sumar `openai`/`anthropic` más adelante (Issue #8 - IA Multi-Provider), cuando exista selección por usuario (depende de auth, Issue #6).
+- Requiere `GEMINI_API_KEY` (conseguila en https://aistudio.google.com/apikey). Límites del tier gratuito con el que se armó esto: 15 RPM, 1.500 RPD, 1M TPM — más que suficiente para probar, pero vigilar si el volumen de mensajes crece.
+- `GEMINI_MODEL` es configurable sin tocar código (default `gemini-2.0-flash`).
+- `AIService.processMessage(mensaje, historial, credencialesTactica, knowledgeContext?)` — el 4º parámetro `knowledgeContext` ya está en la firma para cuando se conecte la Base de Conocimiento (Issue #7), pero hoy no se usa (se pasa vacío).
 
 Nota: el campo `action` de una regla hoy solo tiene efecto real si es `STATIC_REPLY`. Los otros tres valores (`CALL_AI`, `TACTICA_STOCK_LOOKUP`, `CREATE_SUPPORT_TICKET`) existen en el esquema para integraciones futuras pero todavía no están conectados a ninguna lógica.
 
@@ -118,3 +125,5 @@ curl -X POST http://localhost:5000/api/conversations/1/messages -H "Content-Type
 - **Sin autenticación**: `jsonwebtoken`/`bcryptjs` están instalados pero no hay rutas de login/registro.
 - **Sin multi-tenant**: todo corre para una sola empresa; el esquema documentado original contempla `tenants`, pero no está implementado.
 - **Acciones de regla no-`STATIC_REPLY`** (`CALL_AI`, `TACTICA_STOCK_LOOKUP`, `CREATE_SUPPORT_TICKET`) son placeholders sin lógica todavía.
+- **IA con un solo proveedor fijo por `.env`, no por usuario**: `ai.service.ts` soporta hoy solo Gemini vía `AI_PROVIDER`. La selección de proveedor/modelo por usuario (pantalla `/settings/ai` del frontend, guardado en BD) que describe el Issue #8 completo requiere primero autenticación real (Issue #6), que todavía no existe.
+- **Sin Base de Conocimiento todavía**: `AIService.processMessage` ya acepta un `knowledgeContext` opcional para inyectar documentos en el system prompt, pero el CRUD de Knowledge Base (Issue #7) no está implementado — hoy siempre se pasa vacío.

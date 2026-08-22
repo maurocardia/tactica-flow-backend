@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { TacticaApiService } from '../services/tacticaApi.service.js';
-import { OpenAiService } from '../services/openai.service.js';
+import { AIService } from '../services/ai.service.js';
 import { BotEngineService } from '../services/botEngine.service.js';
 import { KeywordRuleService, type RuleAction } from '../services/keywordRule.service.js';
 import { ConversationService, type MessageSender } from '../services/conversation.service.js';
@@ -60,7 +60,7 @@ router.post('/tactica/contacts', async (req: Request, res: Response) => {
 router.post('/ai/chat', async (req: Request, res: Response) => {
   try {
     const { message, history, tacticaCredentials } = req.body;
-    const aiResponse = await OpenAiService.processMessage(message, history || [], tacticaCredentials || {});
+    const aiResponse = await AIService.processMessage(message, history || [], tacticaCredentials || {});
     res.json({ reply: aiResponse });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al procesar consulta de IA' });

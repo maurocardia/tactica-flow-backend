@@ -64,6 +64,29 @@ const SCHEMA_SQL = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
+
+  -- Base de Conocimiento (Issue #7): documentos (PDF/Word/MD/TXT) que alimentan el contexto
+  -- del bot de IA. Global para toda la empresa por ahora (sin user_id/tenant): no hay auth
+  -- todavía (Issue #6). Cuando exista, se puede sumar una FK a users sin romper lo existente.
+  CREATE TABLE IF NOT EXISTS knowledge_bases (
+    id SERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
+  CREATE TABLE IF NOT EXISTS knowledge_documents (
+    id SERIAL PRIMARY KEY,
+    knowledge_base_id INT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+    filename TEXT NOT NULL,
+    content TEXT NOT NULL,
+    mime_type TEXT NOT NULL DEFAULT 'text/plain',
+    char_count INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_knowledge_documents_kb_id ON knowledge_documents(knowledge_base_id);
 `;
 
 /**

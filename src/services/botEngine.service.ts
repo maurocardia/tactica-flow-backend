@@ -1,6 +1,7 @@
-import { OpenAiService } from './openai.service.js';
-import { TacticaApiService, TacticaCredentials } from './tacticaApi.service.js';
+import { AIService } from './ai.service.js';
+import { TacticaCredentials } from './tacticaApi.service.js';
 import { KeywordRuleService } from './keywordRule.service.js';
+import { KnowledgeBaseService } from './knowledgeBase.service.js';
 
 export type { KeywordRule } from './keywordRule.service.js';
 
@@ -29,8 +30,18 @@ export class BotEngineService {
     }
 
     // 2. Si no coincide ninguna palabra clave estática, invocar al Agente Inteligente de IA con Function Calling
-    console.log(`🧠 [BOT ENGINE] Invocando Agente IA de OpenAI con integración Táctica...`);
-    const aiReply = await OpenAiService.processMessage(incomingText, conversationHistory, tacticaCredentials);
+    console.log(`🧠 [BOT ENGINE] Invocando Agente IA (${process.env.AI_PROVIDER || 'gemini'}) con integración Táctica...`);
+
+    // Contexto de la Base de Conocimiento activa (Issue #7): si falla la consulta a la DB, no
+    // tumbamos el bot — seguimos sin contexto extra en vez de romper la respuesta al cliente.
+    let knowledgeContext = '';
+    try {
+      knowledgeContext = await KnowledgeBaseService.getActiveContext();
+    } catch (err) {
+      console.error('⚠️ [BOT ENGINE] No se pudo obtener el contexto de la Base de Conocimiento:', err);
+    }
+
+    const aiReply = await AIService.processMessage(incomingText, conversationHistory, tacticaCredentials, knowledgeContext);
 
     return {
       replyText: aiReply,
