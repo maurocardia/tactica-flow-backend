@@ -24,7 +24,7 @@ Backend modular para la plataforma **Tactica Flow**, diseñado para gestionar se
    ```
 
 3. Configurar variables de entorno:
-   Copiar `.env.example` a `.env` y ajustar credenciales de PostgreSQL y OpenAI:
+   Copiar `.env.example` a `.env` y ajustar credenciales de PostgreSQL y `GEMINI_API_KEY` (IA):
    ```bash
    cp .env.example .env
    ```
@@ -43,7 +43,7 @@ backend/
 ├── src/
 │   ├── config/          # Pool de PostgreSQL, esquema (CREATE TABLE IF NOT EXISTS), initDatabase()
 │   ├── routes/          # Todos los endpoints REST (api.routes.ts)
-│   ├── services/        # Lógica de negocio: TacticaApiService, OpenAiService, BotEngineService,
+│   ├── services/        # Lógica de negocio: TacticaApiService, AIService (Gemini), BotEngineService,
 │   │                     # KeywordRuleService, ConversationService
 │   └── server.ts        # Punto de entrada, servidor HTTP/Socket, arranque de DB
 ├── .env.example
