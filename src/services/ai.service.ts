@@ -10,7 +10,7 @@ dotenv.config();
 // Hoy solo soportamos Gemini (AI_PROVIDER=gemini), pensado para extenderse a OpenAI/Anthropic
 // más adelante (ver Issue #8 - [EPIC] IA Multi-Provider) cuando exista selección por usuario.
 const AI_PROVIDER = process.env.AI_PROVIDER || 'gemini';
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
 
 const google = createGoogleGenerativeAI({
   apiKey: process.env.GEMINI_API_KEY || ''
