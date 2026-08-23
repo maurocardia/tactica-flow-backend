@@ -5,6 +5,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import apiRoutes from './routes/api.routes.js';
 import knowledgeBaseRoutes from './routes/knowledgeBase.routes.js';
+import authRoutes from './routes/auth.routes.js';
 import { initDatabase } from './config/db.js';
 import { ConversationService } from './services/conversation.service.js';
 import { KeywordRuleService } from './services/keywordRule.service.js';
@@ -27,6 +28,7 @@ app.use(express.json());
 // Routes
 app.use('/api', apiRoutes);
 app.use('/api/knowledge-bases', knowledgeBaseRoutes);
+app.use('/api/auth', authRoutes);
 
 // Socket.io Connection
 io.on('connection', (socket: Socket) => {
