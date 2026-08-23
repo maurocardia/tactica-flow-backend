@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import apiRoutes from './routes/api.routes.js';
 import knowledgeBaseRoutes from './routes/knowledgeBase.routes.js';
 import authRoutes from './routes/auth.routes.js';
+import whatsappRoutes from './routes/whatsapp.routes.js';
 import { initDatabase } from './config/db.js';
 import { ConversationService } from './services/conversation.service.js';
 import { KeywordRuleService } from './services/keywordRule.service.js';
@@ -29,6 +30,7 @@ app.use(express.json());
 app.use('/api', apiRoutes);
 app.use('/api/knowledge-bases', knowledgeBaseRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/whatsapp', whatsappRoutes);
 
 // Socket.io Connection
 io.on('connection', (socket: Socket) => {
