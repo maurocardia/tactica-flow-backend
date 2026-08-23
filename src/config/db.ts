@@ -103,6 +103,12 @@ const SCHEMA_SQL = `
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
   );
+
+  -- Conexión nativa a WhatsApp vía Baileys (Issue #9): cada usuario tiene su propia sesión, y
+  -- los chats que llegan por su número deben quedar atados a él. Nullable porque las
+  -- conversaciones creadas antes de esta migración (demo/web sin WhatsApp conectado) no tienen
+  -- dueño; ADD COLUMN IF NOT EXISTS porque la tabla "conversations" ya existe en producción.
+  ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id INT REFERENCES users(id);
 `;
 
 /**

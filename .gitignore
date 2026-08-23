@@ -3,3 +3,6 @@ dist/
 .env
 *.log
 .DS_Store
+
+# Credenciales de sesión de WhatsApp (Baileys) - una carpeta por usuario, nunca committear
+baileys_auth_state_*/

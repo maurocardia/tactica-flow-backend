@@ -20,6 +20,7 @@ export interface Conversation {
   unread: number;
   tag: string;
   status: ConversationStatus;
+  userId: number | null;
 }
 
 // --- Row -> domain object mapping (Postgres devuelve snake_case) ---
@@ -34,6 +35,7 @@ function mapConversationRow(row: any): Conversation {
     unread: row.unread,
     tag: row.tag,
     status: row.status,
+    userId: row.user_id,
   };
 }
 
@@ -143,6 +145,30 @@ export class ConversationService {
   static async getConversation(conversationId: number): Promise<Conversation | null> {
     const { rows } = await db.query('SELECT * FROM conversations WHERE id = $1', [conversationId]);
     if (rows.length === 0) return null;
+    return mapConversationRow(rows[0]);
+  }
+
+  /**
+   * Usado por whatsapp.service.ts cuando llega un mensaje de un número que todavía no tiene
+   * conversación para ese usuario: la crea en el Inbox automáticamente, en modo `bot` (la está
+   * atendiendo el motor del bot, no un agente humano). Si ya existe, la devuelve tal cual.
+   */
+  static async findOrCreateByPhone(phone: string, name: string, userId: number): Promise<Conversation> {
+    const existing = await db.query(
+      'SELECT * FROM conversations WHERE phone = $1 AND user_id = $2',
+      [phone, userId]
+    );
+
+    if (existing.rows.length > 0) {
+      return mapConversationRow(existing.rows[0]);
+    }
+
+    const { rows } = await db.query(
+      `INSERT INTO conversations (name, phone, tag, status, user_id)
+       VALUES ($1, $2, $3, 'bot', $4) RETURNING *`,
+      [name, phone, 'WhatsApp', userId]
+    );
+
     return mapConversationRow(rows[0]);
   }
 
