@@ -87,6 +87,22 @@ const SCHEMA_SQL = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_knowledge_documents_kb_id ON knowledge_documents(knowledge_base_id);
+
+  -- Autenticación Google OAuth (Issue #6): usuarios que loguean con Google desde la extensión
+  -- de Chrome. El backend verifica el idToken y emite su propio JWT (ver auth.service.ts).
+  CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    google_id TEXT UNIQUE NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    avatar_url TEXT,
+    role TEXT NOT NULL DEFAULT 'user',
+    whatsapp_channel TEXT NOT NULL DEFAULT 'none',
+    ai_provider TEXT NOT NULL DEFAULT 'google',
+    ai_model TEXT NOT NULL DEFAULT 'gemini-2.0-flash',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
 `;
 
 /**
