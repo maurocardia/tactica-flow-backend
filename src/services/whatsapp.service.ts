@@ -1,6 +1,6 @@
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, type WASocket } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode';
-import fs from 'fs/promises';
+import { rm } from 'fs/promises';
 import { io } from '../server.js';
 import { ConversationService } from './conversation.service.js';
 import { BotEngineService } from './botEngine.service.js';
@@ -20,12 +20,30 @@ interface WhatsappSession {
 // el QR, salvo que la sesión haya sido deslogueada desde el teléfono o se haya llamado a disconnect()).
 const sessions = new Map<number, WhatsappSession>();
 
-function authStateDir(userId: number) {
+function authStateDir(userId: number): string {
   return `baileys_auth_state_${userId}`;
 }
 
 function emitStatus(userId: number, status: WhatsappConnectionStatus) {
   io.emit('whatsapp_status_updated', { userId, status });
+}
+
+/**
+ * Borra la sesión en memoria y las credenciales persistidas en disco de un usuario. Hace falta
+ * llamar esto (no alcanza con sacar la sesión del Map) cada vez que la sesión de WhatsApp deja
+ * de ser válida — logout desde el teléfono o logout disparado por nosotros — porque
+ * useMultiFileAuthState() reutiliza lo que haya en esa carpeta en el próximo connect(). Si no se
+ * borra, el siguiente intento de conexión falla con las credenciales viejas ya invalidadas por
+ * WhatsApp.
+ */
+async function clearSession(userId: number): Promise<void> {
+  sessions.delete(userId);
+
+  try {
+    await rm(authStateDir(userId), { recursive: true, force: true });
+  } catch (err) {
+    console.error(`⚠️ [WhatsApp] Error borrando las credenciales locales del usuario ${userId}:`, err);
+  }
 }
 
 export class WhatsappService {
@@ -69,13 +87,21 @@ export class WhatsappService {
 
       if (connection === 'close') {
         // lastDisconnect.error es un Boom; el código HTTP-like que nos importa (401 = deslogueado
-        // desde el teléfono) viene en output.statusCode. Cualquier otro motivo de cierre
-        // (timeout, conexión perdida, etc.) amerita reintentar solo.
+        // desde el teléfono, ej. "Cerrar sesión" en WhatsApp > Dispositivos vinculados) viene en
+        // output.statusCode. Cualquier otro motivo de cierre (timeout, conexión perdida, etc.)
+        // amerita reintentar solo, conservando las credenciales.
         const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output
           ?.statusCode;
         const loggedOut = statusCode === DisconnectReason.loggedOut;
 
-        sessions.delete(userId);
+        if (loggedOut) {
+          // Las credenciales en disco quedaron invalidadas del lado de WhatsApp: si no las
+          // borramos acá, el próximo connect() de este usuario intenta reusarlas y falla.
+          await clearSession(userId);
+        } else {
+          sessions.delete(userId);
+        }
+
         emitStatus(userId, 'disconnected');
 
         if (!loggedOut) {
@@ -139,25 +165,21 @@ export class WhatsappService {
 
   static async disconnect(userId: number): Promise<void> {
     const session = sessions.get(userId);
-    sessions.delete(userId);
+
+    // Corre siempre, aunque no haya sesión en memoria: permite limpiar un estado ya roto desde
+    // antes (ej. el backend se reinició de golpe con una sesión a medio conectar) sin necesidad
+    // de que el usuario pase primero por connect().
+    await clearSession(userId);
 
     if (session) {
       try {
         await session.socket.logout();
       } catch (err) {
-        // Puede fallar si la conexión ya estaba caída del otro lado; igual ya limpiamos la sesión.
+        // Puede fallar si la conexión ya estaba caída del otro lado; igual ya limpiamos la sesión
+        // y las credenciales en disco arriba.
         console.error(`⚠️ [WhatsApp] Error cerrando sesión del usuario ${userId}:`, err);
       }
     }
-
-    // Borra las credenciales persistidas en disco: sin esto, un "Conectar" posterior intenta
-    // resumir una sesión que ya no es válida (deslogueada, o rota por un reinicio abrupto del
-    // backend) y Baileys se queda reintentando en vez de pedir un QR nuevo. Corre igual aunque no
-    // hubiera sesión en memoria, para poder limpiar un estado ya roto desde antes (rm con force
-    // porque puede no existir la carpeta).
-    await fs.rm(authStateDir(userId), { recursive: true, force: true }).catch((err) => {
-      console.error(`⚠️ [WhatsApp] Error borrando las credenciales guardadas del usuario ${userId}:`, err);
-    });
 
     emitStatus(userId, 'disconnected');
   }
