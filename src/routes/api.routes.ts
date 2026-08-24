@@ -4,6 +4,7 @@ import { AIService } from '../services/ai.service.js';
 import { BotEngineService } from '../services/botEngine.service.js';
 import { KeywordRuleService, type RuleAction } from '../services/keywordRule.service.js';
 import { ConversationService, type MessageSender } from '../services/conversation.service.js';
+import { AuthService } from '../services/auth.service.js';
 import { io } from '../server.js';
 
 const router = Router();
@@ -129,18 +130,22 @@ router.post('/conversations/:id/messages', async (req: Request, res: Response) =
         priorMessages.filter((msg) => msg.id !== result.message.id)
       );
 
+      // Conversaciones sin dueño (legacy, de antes del multi-tenant de WhatsApp) no tienen de
+      // quién leer la preferencia: se mantiene el comportamiento histórico (fallback a IA on).
+      const owner = conversation.userId ? await AuthService.getUserById(conversation.userId) : null;
+      const aiFallbackEnabled = owner?.aiFallbackEnabled ?? true;
+
       const botResult = await BotEngineService.processIncomingMessage(
         text.trim(),
         conversation.phone,
         history,
-        {}
+        {},
+        aiFallbackEnabled
       );
 
-      const botReplyResult = await ConversationService.addMessage(
-        conversationId,
-        'bot',
-        botResult.replyText
-      );
+      const botReplyResult = botResult
+        ? await ConversationService.addMessage(conversationId, 'bot', botResult.replyText)
+        : null;
 
       if (botReplyResult) {
         responseMessages.push(botReplyResult.message);
