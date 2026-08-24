@@ -142,6 +142,12 @@ export class WhatsappService {
 
     const conversation = await ConversationService.findOrCreateByPhone(phone, contactName, userId);
 
+    // Se pide ANTES de loguear el mensaje entrante actual: son los turnos previos de la
+    // conversación, sin incluir todavía este mensaje (que se lo pasamos aparte a
+    // processIncomingMessage como incomingText).
+    const priorMessages = await ConversationService.getMessages(conversation.id);
+    const history = ConversationService.toAiHistory(priorMessages ?? []);
+
     const inbound = await ConversationService.addMessage(conversation.id, 'customer', text);
     if (inbound) {
       io.to(`chat_${conversation.id}`).emit('new_message', inbound.message);
@@ -153,7 +159,7 @@ export class WhatsappService {
     const user = await AuthService.getUserById(userId);
     if (!user?.botEnabled) return;
 
-    const botResult = await BotEngineService.processIncomingMessage(text, phone, [], {});
+    const botResult = await BotEngineService.processIncomingMessage(text, phone, history, {});
     await socket.sendMessage(remoteJid, { text: botResult.replyText });
 
     const outbound = await ConversationService.addMessage(conversation.id, 'bot', botResult.replyText);
