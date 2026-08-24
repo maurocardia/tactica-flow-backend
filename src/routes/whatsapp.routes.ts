@@ -57,4 +57,21 @@ router.put('/bot-enabled', async (req: Request, res: Response) => {
   }
 });
 
+// Enciende/apaga el fallback a IA cuando ninguna regla de palabra clave matchea. Apagado, el bot
+// (si está habilitado) solo responde con el chatbot manual — si ninguna regla matchea, no manda
+// ninguna respuesta automática. Ver WhatsappService.handleIncomingMessage.
+router.put('/ai-fallback-enabled', async (req: Request, res: Response) => {
+  const { enabled } = req.body;
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ error: 'El campo "enabled" es requerido y debe ser booleano' });
+  }
+
+  try {
+    const user = await AuthService.setAiFallbackEnabled(req.user!.id, enabled);
+    res.json({ aiFallbackEnabled: user?.aiFallbackEnabled ?? enabled });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar el fallback de IA' });
+  }
+});
+
 export default router;
