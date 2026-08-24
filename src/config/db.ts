@@ -114,6 +114,12 @@ const SCHEMA_SQL = `
   -- ADD COLUMN IF NOT EXISTS porque la tabla "users" ya existe en producción desde antes de este
   -- interruptor: apaga/prende el auto-responder de WhatsApp (Baileys) para este usuario.
   ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_enabled BOOLEAN NOT NULL DEFAULT true;
+
+  -- Switch "Responder con IA" del panel: con el bot habilitado, si ningún keyword_rule matchea,
+  -- este flag decide si se cae al agente de IA (true, comportamiento histórico) o si en cambio
+  -- no se manda ninguna respuesta automática y queda solo el chatbot manual (false). Default true
+  -- para no cambiar el comportamiento de nadie que todavía no tocó este switch nuevo.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_fallback_enabled BOOLEAN NOT NULL DEFAULT true;
 `;
 
 /**

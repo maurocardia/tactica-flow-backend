@@ -159,7 +159,9 @@ export class WhatsappService {
     const user = await AuthService.getUserById(userId);
     if (!user?.botEnabled) return;
 
-    const botResult = await BotEngineService.processIncomingMessage(text, phone, history, {});
+    const botResult = await BotEngineService.processIncomingMessage(text, phone, history, {}, user.aiFallbackEnabled);
+    if (!botResult) return; // "Responder con IA" apagado y ninguna regla matcheó: sin respuesta automática.
+
     await socket.sendMessage(remoteJid, { text: botResult.replyText });
 
     const outbound = await ConversationService.addMessage(conversation.id, 'bot', botResult.replyText);

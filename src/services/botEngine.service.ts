@@ -13,8 +13,9 @@ export class BotEngineService {
     incomingText: string,
     customerPhoneNumber: string,
     conversationHistory: any[] = [],
-    tacticaCredentials: TacticaCredentials = {}
-  ): Promise<{ replyText: string; source: 'KEYWORD_RULE' | 'AI_AGENT' | 'TACTICA_API' }> {
+    tacticaCredentials: TacticaCredentials = {},
+    aiFallbackEnabled: boolean = true
+  ): Promise<{ replyText: string; source: 'KEYWORD_RULE' | 'AI_AGENT' | 'TACTICA_API' } | null> {
     const textLower = incomingText.trim().toLowerCase();
 
     // 1. Evaluar Reglas por Palabras Clave (Keyword Triggers)
@@ -27,6 +28,14 @@ export class BotEngineService {
           source: 'KEYWORD_RULE'
         };
       }
+    }
+
+    // Switch "Responder con IA": ninguna regla matcheó y el fallback está apagado -> no hay
+    // respuesta automática, queda solo el chatbot manual (el mensaje del cliente ya se logueó
+    // en el llamador, esto simplemente no genera una respuesta del bot).
+    if (!aiFallbackEnabled) {
+      console.log('🤖 [BOT ENGINE] Ninguna regla matcheó y el fallback de IA está apagado — sin respuesta automática.');
+      return null;
     }
 
     // 2. Si no coincide ninguna palabra clave estática, invocar al Agente Inteligente de IA con Function Calling
