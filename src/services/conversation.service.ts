@@ -142,6 +142,23 @@ export class ConversationService {
     return rows.map(mapMessageRow);
   }
 
+  /**
+   * Convierte los últimos mensajes guardados de una conversación al formato de historial que
+   * espera AIService.processMessage: 'customer' -> 'user', y tanto 'agent' como 'bot' -> 'assistant'
+   * (desde el punto de vista del modelo, cualquier mensaje ya enviado al cliente es un turno
+   * propio, sin importar si lo tipeó un humano o el bot). Se limita a los últimos `limit`
+   * mensajes para no disparar el consumo de tokens en conversaciones largas.
+   */
+  static toAiHistory(
+    messages: ConversationMessage[],
+    limit = 20
+  ): { role: 'user' | 'assistant'; content: string }[] {
+    return messages.slice(-limit).map((msg) => ({
+      role: msg.sender === 'customer' ? 'user' : 'assistant',
+      content: msg.text,
+    }));
+  }
+
   static async getConversation(conversationId: number): Promise<Conversation | null> {
     const { rows } = await db.query('SELECT * FROM conversations WHERE id = $1', [conversationId]);
     if (rows.length === 0) return null;
