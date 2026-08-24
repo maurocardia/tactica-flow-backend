@@ -126,4 +126,3 @@ curl -X POST http://localhost:5000/api/conversations/1/messages -H "Content-Type
 - **Sin multi-tenant**: todo corre para una sola empresa; el esquema documentado original contempla `tenants`, pero no está implementado.
 - **Acciones de regla no-`STATIC_REPLY`** (`CALL_AI`, `TACTICA_STOCK_LOOKUP`, `CREATE_SUPPORT_TICKET`) son placeholders sin lógica todavía.
 - **IA con un solo proveedor fijo por `.env`, no por usuario**: `ai.service.ts` soporta hoy solo Gemini vía `AI_PROVIDER`. La selección de proveedor/modelo por usuario (pantalla `/settings/ai` del frontend, guardado en BD) que describe el Issue #8 completo requiere primero autenticación real (Issue #6), que todavía no existe.
-- **Sin Base de Conocimiento todavía**: `AIService.processMessage` ya acepta un `knowledgeContext` opcional para inyectar documentos en el system prompt, pero el CRUD de Knowledge Base (Issue #7) no está implementado — hoy siempre se pasa vacío.

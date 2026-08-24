@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { WhatsappService } from '../services/whatsapp.service.js';
+import { AuthService } from '../services/auth.service.js';
 import { authMiddleware } from '../middleware/auth.middleware.js';
 
 const router = Router();
@@ -38,6 +39,22 @@ router.get('/qr', (req: Request, res: Response) => {
   }
 
   res.json({ qr });
+});
+
+// Enciende/apaga el auto-responder (motor de reglas + IA) para la sesión de Baileys de este
+// usuario — ver WhatsappService.handleIncomingMessage, que consulta este flag antes de responder.
+router.put('/bot-enabled', async (req: Request, res: Response) => {
+  const { enabled } = req.body;
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ error: 'El campo "enabled" es requerido y debe ser booleano' });
+  }
+
+  try {
+    const user = await AuthService.setBotEnabled(req.user!.id, enabled);
+    res.json({ botEnabled: user?.botEnabled ?? enabled });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar el estado del bot' });
+  }
 });
 
 export default router;

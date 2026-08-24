@@ -3,6 +3,7 @@ import qrcode from 'qrcode';
 import { io } from '../server.js';
 import { ConversationService } from './conversation.service.js';
 import { BotEngineService } from './botEngine.service.js';
+import { AuthService } from './auth.service.js';
 
 export type WhatsappConnectionStatus = 'disconnected' | 'connecting' | 'qr_ready' | 'connected';
 
@@ -115,6 +116,11 @@ export class WhatsappService {
       io.to(`chat_${conversation.id}`).emit('new_message', inbound.message);
       io.emit('conversation_updated', inbound.conversation);
     }
+
+    // Switch "Habilitar bot" del panel (PUT /api/whatsapp/bot-enabled): el mensaje del cliente
+    // queda igual registrado en la conversación arriba, pero si está apagado no autorespondemos.
+    const user = await AuthService.getUserById(userId);
+    if (!user?.botEnabled) return;
 
     const botResult = await BotEngineService.processIncomingMessage(text, phone, [], {});
     await socket.sendMessage(remoteJid, { text: botResult.replyText });
