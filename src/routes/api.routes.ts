@@ -122,10 +122,17 @@ router.post('/conversations/:id/messages', async (req: Request, res: Response) =
 
     // Bot auto-reply if customer message in bot mode
     if (sender === 'customer' && conversation.status === 'bot') {
+      // Historial previo a este mensaje (que ya se logueó arriba como `result.message`), para
+      // que la IA tenga contexto de la conversación en vez de responder cada mensaje aislado.
+      const priorMessages = (await ConversationService.getMessages(conversationId)) ?? [];
+      const history = ConversationService.toAiHistory(
+        priorMessages.filter((msg) => msg.id !== result.message.id)
+      );
+
       const botResult = await BotEngineService.processIncomingMessage(
         text.trim(),
         conversation.phone,
-        [],
+        history,
         {}
       );
 
