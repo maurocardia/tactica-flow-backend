@@ -21,6 +21,7 @@ export interface User {
   whatsappChannel: string;
   aiProvider: string;
   aiModel: string;
+  botEnabled: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -36,6 +37,7 @@ function mapUserRow(row: any): User {
     whatsappChannel: row.whatsapp_channel,
     aiProvider: row.ai_provider,
     aiModel: row.ai_model,
+    botEnabled: row.bot_enabled,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -82,6 +84,15 @@ export class AuthService {
 
   static async getUserById(id: number): Promise<User | null> {
     const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [id]);
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setBotEnabled(id: number, botEnabled: boolean): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET bot_enabled = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [botEnabled, id]
+    );
     if (rows.length === 0) return null;
     return mapUserRow(rows[0]);
   }

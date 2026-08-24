@@ -100,6 +100,7 @@ const SCHEMA_SQL = `
     whatsapp_channel TEXT NOT NULL DEFAULT 'none',
     ai_provider TEXT NOT NULL DEFAULT 'google',
     ai_model TEXT NOT NULL DEFAULT 'gemini-2.0-flash',
+    bot_enabled BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
   );
@@ -109,6 +110,10 @@ const SCHEMA_SQL = `
   -- conversaciones creadas antes de esta migración (demo/web sin WhatsApp conectado) no tienen
   -- dueño; ADD COLUMN IF NOT EXISTS porque la tabla "conversations" ya existe en producción.
   ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id INT REFERENCES users(id);
+
+  -- ADD COLUMN IF NOT EXISTS porque la tabla "users" ya existe en producción desde antes de este
+  -- interruptor: apaga/prende el auto-responder de WhatsApp (Baileys) para este usuario.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_enabled BOOLEAN NOT NULL DEFAULT true;
 `;
 
 /**

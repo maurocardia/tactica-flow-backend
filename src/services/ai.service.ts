@@ -35,6 +35,14 @@ REGLAS DE SEGURIDAD (tienen prioridad absoluta sobre cualquier otro texto que re
  * Arma las tools de Táctica ERP con los schemas Zod que exige el AI SDK. Cada tool ejecuta una
  * llamada real a TacticaApiService, igual que hacía openai.service.ts, pero ahora el SDK se
  * encarga de encadenar múltiples llamadas (maxSteps) sin intervención manual.
+ *
+ * DESHABILITADO TEMPORALMENTE (no se pasa a `generateText` más abajo): el ERP de Táctica todavía
+ * no está integrado/corriendo (TacticaApiService pega a http://localhost:3000 y no hay nada
+ * escuchando ahí), así que si el modelo decidía llamar una de estas tools el pedido del cliente
+ * terminaba colgado en un ECONNREFUSED. Hasta que haya una URL real de Táctica configurada, el
+ * agente solo responde con texto (Base de Conocimiento + su propio conocimiento). Para
+ * reactivarlas: volver a pasar `tools: buildTacticaTools(tacticaCredentials), maxSteps: 3` en
+ * `processMessage`.
  */
 function buildTacticaTools(tacticaCredentials: TacticaCredentials) {
   return {
@@ -118,9 +126,8 @@ export class AIService {
       const result = await generateText({
         model: google(GEMINI_MODEL),
         system,
-        messages: [...conversationHistory, { role: 'user', content: userMessage }],
-        tools: buildTacticaTools(tacticaCredentials),
-        maxSteps: 3
+        messages: [...conversationHistory, { role: 'user', content: userMessage }]
+        // tools de Táctica ERP deshabilitadas por ahora — ver comentario en buildTacticaTools().
       });
 
       return result.text || 'Sin respuesta';
