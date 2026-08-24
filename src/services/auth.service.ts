@@ -22,6 +22,7 @@ export interface User {
   aiProvider: string;
   aiModel: string;
   botEnabled: boolean;
+  aiFallbackEnabled: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -38,6 +39,7 @@ function mapUserRow(row: any): User {
     aiProvider: row.ai_provider,
     aiModel: row.ai_model,
     botEnabled: row.bot_enabled,
+    aiFallbackEnabled: row.ai_fallback_enabled,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -92,6 +94,15 @@ export class AuthService {
     const { rows } = await db.query(
       `UPDATE users SET bot_enabled = $1, updated_at = now() WHERE id = $2 RETURNING *`,
       [botEnabled, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setAiFallbackEnabled(id: number, aiFallbackEnabled: boolean): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET ai_fallback_enabled = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [aiFallbackEnabled, id]
     );
     if (rows.length === 0) return null;
     return mapUserRow(rows[0]);
