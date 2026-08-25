@@ -24,7 +24,7 @@ export interface KnowledgeDocument {
 // AIService.processMessage / KnowledgeBaseService.getActiveContext). Evita que subir muchos
 // documentos dispare el consumo de tokens por mensaje contra los límites de Gemini (ver .env:
 // 15 RPM / 1.500 RPD / 1M TPM). Ajustable por variable de entorno sin tocar código.
-const MAX_CONTEXT_CHARS = parseInt(process.env.KB_MAX_CONTEXT_CHARS || '60000', 10);
+const MAX_CONTEXT_CHARS = parseInt(process.env.KB_MAX_CONTEXT_CHARS || '200000', 10);
 
 const ALLOWED_EXTENSIONS = ['pdf', 'docx', 'txt', 'md'];
 
