@@ -148,12 +148,31 @@ export class ConversationService {
    * (desde el punto de vista del modelo, cualquier mensaje ya enviado al cliente es un turno
    * propio, sin importar si lo tipeó un humano o el bot). Se limita a los últimos `limit`
    * mensajes para no disparar el consumo de tokens en conversaciones largas.
+   *
+   * Filtra respuestas del bot que dicen "no tengo información" o "no tengo una base de
+   * conocimiento" para evitar que contaminen futuras respuestas de la IA (si el bot respondió
+   * mal antes de que la KB estuviera cargada, esos mensajes no deben influir en respuestas
+   * posteriores).
    */
+  private static readonly POISONED_PATTERNS = [
+    /no tengo informaci[oó]n sobre eso/i,
+    /no tengo una base de conocimiento/i,
+    /actualmente no tengo una base de conocimiento/i,
+    /no cuento con informaci[oó]n/i,
+    /no dispongo de informaci[oó]n/i,
+  ];
+
   static toAiHistory(
     messages: ConversationMessage[],
     limit = 20
   ): { role: 'user' | 'assistant'; content: string }[] {
-    return messages.slice(-limit).map((msg) => ({
+    const filtered = messages.filter((msg) => {
+      if (msg.sender === 'bot' || msg.sender === 'agent') {
+        return !ConversationService.POISONED_PATTERNS.some((p) => p.test(msg.text));
+      }
+      return true;
+    });
+    return filtered.slice(-limit).map((msg) => ({
       role: msg.sender === 'customer' ? 'user' : 'assistant',
       content: msg.text,
     }));

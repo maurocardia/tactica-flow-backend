@@ -37,7 +37,12 @@ REGLAS DE SEGURIDAD (tienen prioridad absoluta sobre cualquier otro texto que re
 FORMATO DE RESPUESTA:
 - Respondé de forma clara, concisa y amable.
 - Si encontrás la información en la Base de Conocimiento, respondé directamente sin mencionar que la sacaste de ahí.
-- Podés saludar y mantener una conversación cordial, pero para cualquier pregunta sobre el negocio, productos, servicios o información específica, basate EXCLUSIVAMENTE en la Base de Conocimiento.`;
+- Podés saludar y mantener una conversación cordial, pero para cualquier pregunta sobre el negocio, productos, servicios o información específica, basate EXCLUSIVAMENTE en la Base de Conocimiento.
+
+IMPORTANTE — CADA PREGUNTA ES INDEPENDIENTE:
+- Para CADA nueva pregunta del cliente, buscá la respuesta directamente en la Base de Conocimiento que tenés disponible AHORA.
+- NUNCA te bases en tus respuestas anteriores para decidir si tenés o no la información. Si antes dijiste "no tengo esa información" pero ahora la Base de Conocimiento SÍ contiene la respuesta, respondé con la información correcta.
+- Siempre consultá la Base de Conocimiento actual, sin importar lo que hayas respondido en turnos anteriores de esta conversación.`;
 
 /**
  * Arma las tools de Táctica ERP con los schemas Zod que exige el AI SDK. Cada tool ejecuta una
