@@ -61,7 +61,17 @@ router.post('/tactica/contacts', async (req: Request, res: Response) => {
 router.post('/ai/chat', async (req: Request, res: Response) => {
   try {
     const { message, history, tacticaCredentials } = req.body;
-    const aiResponse = await AIService.processMessage(message, history || [], tacticaCredentials || {});
+
+    // Cargar el contexto de la Base de Conocimiento activa (igual que hace BotEngineService)
+    let knowledgeContext = '';
+    try {
+      const { KnowledgeBaseService } = await import('../services/knowledgeBase.service.js');
+      knowledgeContext = await KnowledgeBaseService.getActiveContext();
+    } catch (err) {
+      console.error('⚠️ [ai/chat] No se pudo obtener el contexto de la Base de Conocimiento:', err);
+    }
+
+    const aiResponse = await AIService.processMessage(message, history || [], tacticaCredentials || {}, knowledgeContext);
     res.json({ reply: aiResponse });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al procesar consulta de IA' });
