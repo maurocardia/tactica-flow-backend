@@ -20,11 +20,7 @@ export interface KnowledgeDocument {
   createdAt: string;
 }
 
-// Tope de caracteres del contexto total que se inyecta en el system prompt del bot (ver
-// AIService.processMessage / KnowledgeBaseService.getActiveContext). Evita que subir muchos
-// documentos dispare el consumo de tokens por mensaje contra los límites de Gemini (ver .env:
-// 15 RPM / 1.500 RPD / 1M TPM). Ajustable por variable de entorno sin tocar código.
-const MAX_CONTEXT_CHARS = parseInt(process.env.KB_MAX_CONTEXT_CHARS || '200000', 10);
+
 
 const ALLOWED_EXTENSIONS = ['pdf', 'docx', 'txt', 'md'];
 
@@ -235,18 +231,8 @@ export class KnowledgeBaseService {
     if (rows.length === 0) return '';
 
     let context = '';
-    let truncated = false;
     for (const row of rows) {
-      const block = `=== Base: ${row.base_title} — Documento: ${row.filename} ===\n${row.content}\n\n`;
-      if (context.length + block.length > MAX_CONTEXT_CHARS) {
-        truncated = true;
-        break;
-      }
-      context += block;
-    }
-
-    if (truncated) {
-      console.warn(`⚠️ [KnowledgeBaseService] Contexto truncado en ${MAX_CONTEXT_CHARS} caracteres (KB_MAX_CONTEXT_CHARS). Subiste más documentos de los que entran en el límite configurado.`);
+      context += `=== Base: ${row.base_title} — Documento: ${row.filename} ===\n${row.content}\n\n`;
     }
 
     return context.trim();
