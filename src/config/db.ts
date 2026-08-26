@@ -120,6 +120,12 @@ const SCHEMA_SQL = `
   -- no se manda ninguna respuesta automática y queda solo el chatbot manual (false). Default true
   -- para no cambiar el comportamiento de nadie que todavía no tocó este switch nuevo.
   ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_fallback_enabled BOOLEAN NOT NULL DEFAULT true;
+
+  -- Instrucciones de comportamiento personalizadas para la IA (panel "Comportamiento de IA"):
+  -- texto libre que el usuario define y que se inyecta en el system prompt, además de las reglas
+  -- fijas y del contenido de la Base de Conocimiento — ver AIService.processMessage. Vacío por
+  -- default: no cambia el comportamiento de nadie que no lo configure.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_custom_instructions TEXT NOT NULL DEFAULT '';
 `;
 
 /**
