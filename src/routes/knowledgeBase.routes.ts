@@ -8,31 +8,23 @@ const router = Router();
 // exista, estas rutas deben protegerse con el authMiddleware, igual que el resto de rutas
 // sensibles del backend.
 
-// Límite de peso por archivo. 10MB es un tope estándar para adjuntos de documentos (varios
-// servicios de subida/CMS usan ese default; para referencia, Gmail permite hasta 25MB por
-// adjunto). Para PDF/Word/TXT/MD de políticas, catálogos o FAQs, 10MB es más que suficiente —
-// un archivo más pesado que eso normalmente es un PDF escaneado como imágenes, que igual no
-// sirve bien para este caso de uso (no tiene texto para extraer). Configurable sin tocar
-// código vía KB_MAX_FILE_SIZE_MB.
-const MAX_FILE_SIZE_MB = parseInt(process.env.KB_MAX_FILE_SIZE_MB || '10', 10);
-
+// Sin límite de tamaño de archivo a propósito (a pedido de negocio: "documentos sin límites"),
+// igual que ya se sacó el límite de caracteres del contexto (ver KnowledgeBaseService.getActiveContext).
+// Nota operativa: los archivos se procesan en memoria (multer.memoryStorage()), así que un
+// archivo excepcionalmente grande consume RAM del proceso — aceptable porque esta API es de uso
+// interno (equipo propio subiendo catálogos/políticas), no un endpoint público.
 const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_FILE_SIZE_MB * 1024 * 1024 }
+  storage: multer.memoryStorage()
 });
 
 /**
- * multer reporta errores (como exceder el límite de tamaño) llamando a next(err) en vez de
- * lanzar una excepción normal, así que un try/catch alrededor del handler de la ruta no los
- * atrapa. Este wrapper corre multer manualmente y convierte esos errores en la misma forma de
- * JSON { error: "..." } que usa el resto de la API, en vez de dejar que Express devuelva su
- * página de error genérica.
+ * multer reporta errores llamando a next(err) en vez de lanzar una excepción normal, así que un
+ * try/catch alrededor del handler de la ruta no los atrapa. Este wrapper corre multer
+ * manualmente y convierte esos errores en la misma forma de JSON { error: "..." } que usa el
+ * resto de la API, en vez de dejar que Express devuelva su página de error genérica.
  */
 function handleUpload(req: Request, res: Response, next: NextFunction) {
   upload.single('file')(req, res, (err: unknown) => {
-    if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ error: `El archivo supera el límite de ${MAX_FILE_SIZE_MB}MB permitido.` });
-    }
     if (err) {
       const message = err instanceof Error ? err.message : 'Error al procesar el archivo subido';
       return res.status(400).json({ error: message });
