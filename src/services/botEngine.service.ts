@@ -14,7 +14,8 @@ export class BotEngineService {
     customerPhoneNumber: string,
     conversationHistory: any[] = [],
     tacticaCredentials: TacticaCredentials = {},
-    aiFallbackEnabled: boolean = true
+    aiFallbackEnabled: boolean = true,
+    customInstructions: string = ''
   ): Promise<{ replyText: string; source: 'KEYWORD_RULE' | 'AI_AGENT' | 'TACTICA_API' } | null> {
     const textLower = incomingText.trim().toLowerCase();
 
@@ -50,7 +51,7 @@ export class BotEngineService {
       console.error('⚠️ [BOT ENGINE] No se pudo obtener el contexto de la Base de Conocimiento:', err);
     }
 
-    const aiReply = await AIService.processMessage(incomingText, conversationHistory, tacticaCredentials, knowledgeContext);
+    const aiReply = await AIService.processMessage(incomingText, conversationHistory, tacticaCredentials, knowledgeContext, customInstructions);
 
     return {
       replyText: aiReply,
