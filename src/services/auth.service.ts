@@ -23,6 +23,7 @@ export interface User {
   aiModel: string;
   botEnabled: boolean;
   aiFallbackEnabled: boolean;
+  aiCustomInstructions: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -40,6 +41,7 @@ function mapUserRow(row: any): User {
     aiModel: row.ai_model,
     botEnabled: row.bot_enabled,
     aiFallbackEnabled: row.ai_fallback_enabled,
+    aiCustomInstructions: row.ai_custom_instructions,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -103,6 +105,15 @@ export class AuthService {
     const { rows } = await db.query(
       `UPDATE users SET ai_fallback_enabled = $1, updated_at = now() WHERE id = $2 RETURNING *`,
       [aiFallbackEnabled, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setAiCustomInstructions(id: number, aiCustomInstructions: string): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET ai_custom_instructions = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [aiCustomInstructions, id]
     );
     if (rows.length === 0) return null;
     return mapUserRow(rows[0]);

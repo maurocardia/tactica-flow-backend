@@ -74,4 +74,21 @@ router.put('/ai-fallback-enabled', async (req: Request, res: Response) => {
   }
 });
 
+// Instrucciones de comportamiento personalizadas para la IA (panel "Comportamiento de IA"):
+// texto libre que se inyecta en el system prompt junto con la Base de Conocimiento — ver
+// AIService.processMessage.
+router.put('/ai-custom-instructions', async (req: Request, res: Response) => {
+  const { instructions } = req.body;
+  if (typeof instructions !== 'string') {
+    return res.status(400).json({ error: 'El campo "instructions" es requerido y debe ser una cadena' });
+  }
+
+  try {
+    const user = await AuthService.setAiCustomInstructions(req.user!.id, instructions);
+    res.json({ aiCustomInstructions: user?.aiCustomInstructions ?? instructions });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar las instrucciones de comportamiento' });
+  }
+});
+
 export default router;

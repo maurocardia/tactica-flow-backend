@@ -131,7 +131,8 @@ router.post('/conversations/:id/messages', async (req: Request, res: Response) =
       );
 
       // Conversaciones sin dueño (legacy, de antes del multi-tenant de WhatsApp) no tienen de
-      // quién leer la preferencia: se mantiene el comportamiento histórico (fallback a IA on).
+      // quién leer la preferencia: se mantiene el comportamiento histórico (fallback a IA on,
+      // sin instrucciones personalizadas).
       const owner = conversation.userId ? await AuthService.getUserById(conversation.userId) : null;
       const aiFallbackEnabled = owner?.aiFallbackEnabled ?? true;
 
@@ -140,7 +141,8 @@ router.post('/conversations/:id/messages', async (req: Request, res: Response) =
         conversation.phone,
         history,
         {},
-        aiFallbackEnabled
+        aiFallbackEnabled,
+        owner?.aiCustomInstructions ?? ''
       );
 
       const botReplyResult = botResult
