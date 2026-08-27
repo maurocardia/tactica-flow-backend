@@ -16,6 +16,21 @@ import { WhatsappService } from './services/whatsapp.service.js';
 
 dotenv.config();
 
+// Baileys (y otras libs con lógica interna basada en eventos) a veces rechazan una promesa que
+// nadie está esperando desde nuestro código — ej. un timeout reconectando el socket de WhatsApp
+// (getAvailablePreKeysOnServer/uploadPreKeysToServerIfRequired corren dentro del propio manejo
+// de eventos de la librería, no dentro de la promesa que devuelve WhatsappService.connect()).
+// Sin este handler, un unhandledRejection tumba TODO el proceso de Node — cortando la conexión
+// de WhatsApp y la API para TODOS los usuarios, no solo el que tuvo el error puntual de reconexión.
+// Lo logueamos y dejamos que el servidor siga corriendo.
+process.on('unhandledRejection', (reason) => {
+  console.error('⚠️  [process] Unhandled Rejection (el servidor sigue corriendo):', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('⚠️  [process] Uncaught Exception (el servidor sigue corriendo):', err);
+});
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
