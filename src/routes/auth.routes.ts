@@ -4,6 +4,13 @@ import { authMiddleware } from '../middleware/auth.middleware.js';
 
 const router = Router();
 
+// Endpoint público para que la extensión obtenga el Client ID dinámicamente desde el .env del backend
+router.get('/config', (_req: Request, res: Response) => {
+  res.json({
+    googleClientId: process.env.GOOGLE_CLIENT_ID || '',
+  });
+});
+
 router.post('/google', async (req: Request, res: Response) => {
   try {
     const { idToken } = req.body;

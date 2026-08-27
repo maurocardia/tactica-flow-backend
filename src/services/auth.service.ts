@@ -2,8 +2,6 @@ import { OAuth2Client } from 'google-auth-library';
 import jwt from 'jsonwebtoken';
 import { db } from '../config/db.js';
 
-const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-
 export interface GoogleTokenPayload {
   sub: string;
   email: string;
@@ -51,9 +49,14 @@ function mapUserRow(row: any): User {
 
 export class AuthService {
   static async verifyGoogleToken(idToken: string): Promise<GoogleTokenPayload> {
-    const ticket = await googleClient.verifyIdToken({
+    const googleClientId = process.env.GOOGLE_CLIENT_ID;
+    if (!googleClientId) {
+      throw new Error('GOOGLE_CLIENT_ID no está configurado en el archivo .env del backend');
+    }
+    const client = new OAuth2Client(googleClientId);
+    const ticket = await client.verifyIdToken({
       idToken,
-      audience: process.env.GOOGLE_CLIENT_ID,
+      audience: googleClientId,
     });
 
     const payload = ticket.getPayload();
