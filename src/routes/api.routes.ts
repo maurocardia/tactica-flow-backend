@@ -89,9 +89,16 @@ router.post('/ai/draft', async (req: Request, res: Response) => {
 
     try {
       const active = await KnowledgeBaseService.getActiveContext(searchTarget);
-      if (active.context && active.context.length > 30) {
+      if (active.context && active.isRelevant) {
+        // isRelevant=true significa que el RAG encontró fragmentos con score real > 0 para la consulta
         knowledgeContext = active.context;
         foundInKb = true;
+        baseIds = active.baseIds;
+      } else if (active.context) {
+        // Hay KB activa pero ningún fragmento es relevante para la consulta: pasamos contexto a la IA
+        // pero NO mostramos badge de "respaldado" porque la KB no habla del tema
+        knowledgeContext = active.context;
+        foundInKb = false;
         baseIds = active.baseIds;
       }
     } catch (kbErr) {

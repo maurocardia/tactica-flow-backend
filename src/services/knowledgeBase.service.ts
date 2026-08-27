@@ -227,8 +227,12 @@ export class KnowledgeBaseService {
    * Si el texto acumulado es grande, aplica un filtro de relevancia (RAG ligero) extrayendo
    * los fragmentos que mejor responden a la consulta del usuario, reduciendo el consumo de
    * tokens en hasta un 95% y evitando exceder límites de cuota (TPM).
+   *
+   * Devuelve también `isRelevant = true` solo si hay fragmentos con score > 0 para la consulta.
+   * Cuando `isRelevant = false`, los fragmentos son fallback sin coincidencia real y NO deben
+   * presentarse al usuario como "respaldados por la Base de Conocimiento".
    */
-  static async getActiveContext(query?: string): Promise<{ context: string; baseIds: number[] }> {
+  static async getActiveContext(query?: string): Promise<{ context: string; baseIds: number[]; isRelevant: boolean }> {
     const { rows } = await db.query(
       `SELECT kb.id AS base_id, kb.title AS base_title, d.filename, d.content
        FROM knowledge_documents d
@@ -237,7 +241,7 @@ export class KnowledgeBaseService {
        ORDER BY kb.created_at ASC, d.created_at ASC`
     );
 
-    if (rows.length === 0) return { context: '', baseIds: [] };
+    if (rows.length === 0) return { context: '', baseIds: [], isRelevant: false };
 
     const baseIds = new Set<number>();
     rows.forEach((r) => baseIds.add(r.base_id));
@@ -245,13 +249,14 @@ export class KnowledgeBaseService {
     let totalLength = 0;
     rows.forEach((r) => (totalLength += (r.content || '').length));
 
-    // Si el contenido total es pequeño (<= 14.000 caracteres, ~3.500 tokens) o no hay query, enviamos todo directo
+    // Si el contenido total es pequeño (<= 14.000 caracteres, ~3.500 tokens) o no hay query, enviamos todo directo.
+    // En ese caso marcamos como relevante si no hay query (modo chatbot sin consulta específica).
     if (totalLength <= 14000 || !query || !query.trim()) {
       let context = '';
       for (const row of rows) {
         context += `=== Base: ${row.base_title} — Documento: ${row.filename} ===\n${row.content}\n\n`;
       }
-      return { context: context.trim(), baseIds: [...baseIds] };
+      return { context: context.trim(), baseIds: [...baseIds], isRelevant: !query || !query.trim() };
     }
 
     // --- Filtro de Relevancia Semántica y Palabras Clave (RAG Ligero) ---
@@ -259,7 +264,8 @@ export class KnowledgeBaseService {
       'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'de', 'del', 'a', 'al', 'en', 'para', 'por', 'con',
       'sin', 'sobre', 'que', 'como', 'cuando', 'donde', 'quien', 'cual', 'cuanto', 'este', 'esta', 'estos', 'estas',
       'hola', 'buenas', 'dias', 'tardes', 'noches', 'favor', 'gracias', 'porfa', 'podrias', 'puedes', 'tienen',
-      'hay', 'ser', 'estar', 'hacer', 'mi', 'tu', 'su', 'nos', 'me', 'te', 'se', 'le', 'les', 'lo', 'y', 'o', 'pero'
+      'hay', 'ser', 'estar', 'hacer', 'mi', 'tu', 'su', 'nos', 'me', 'te', 'se', 'le', 'les', 'lo', 'y', 'o', 'pero',
+      'venden', 'vende', 'vender', 'tienes', 'tiene', 'consigo', 'conseguir', 'ustedes', 'nosotros'
     ]);
 
     const queryKeywords = query
@@ -298,7 +304,7 @@ export class KnowledgeBaseService {
         let score = 0;
 
         if (queryKeywords.length === 0) {
-          score = 1;
+          score = 0; // sin keywords semánticas: no marcamos como relevante
         } else {
           for (const kw of queryKeywords) {
             const matches = (chunkLower.match(new RegExp(`\\b${kw}`, 'g')) || []).length;
@@ -319,6 +325,10 @@ export class KnowledgeBaseService {
     }
 
     chunks.sort((a, b) => b.score - a.score);
+
+    // isRelevant = true solo si el fragmento con mayor puntaje tiene score real > 0
+    const maxScore = chunks.length > 0 ? chunks[0].score : 0;
+    const isRelevant = maxScore > 0;
 
     let selectedLength = 0;
     const selectedChunks: Chunk[] = [];
@@ -341,9 +351,9 @@ export class KnowledgeBaseService {
     }
 
     console.log(
-      `⚡ [KnowledgeBaseService] Contexto optimizado para IA: ${selectedLength} chars (~${Math.round(selectedLength / 4)} tokens) seleccionados de ${totalLength} chars totales.`
+      `⚡ [KnowledgeBaseService] Contexto: maxScore=${maxScore}, isRelevant=${isRelevant}, ${selectedLength} chars seleccionados de ${totalLength} totales.`
     );
 
-    return { context: context.trim(), baseIds: [...baseIds] };
+    return { context: context.trim(), baseIds: [...baseIds], isRelevant };
   }
 }
