@@ -20,15 +20,15 @@ function getSanitizedApiKey(): string {
 }
 
 function getSanitizedModelName(): string {
-  let model = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+  let model = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
   if (model.includes('=')) {
-    model = model.split('=').pop() || 'gemini-2.0-flash';
+    model = model.split('=').pop() || 'gemini-3.1-flash-lite';
   }
   model = model.trim().replace(/^['"]|['"]$/g, '');
   if (!model.startsWith('gemini-')) {
     model = `gemini-${model}`;
   }
-  return model || 'gemini-2.0-flash';
+  return model || 'gemini-3.1-flash-lite';
 }
 
 const google = createGoogleGenerativeAI({
