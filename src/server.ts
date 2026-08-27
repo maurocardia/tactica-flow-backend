@@ -7,9 +7,11 @@ import apiRoutes from './routes/api.routes.js';
 import knowledgeBaseRoutes from './routes/knowledgeBase.routes.js';
 import authRoutes from './routes/auth.routes.js';
 import whatsappRoutes from './routes/whatsapp.routes.js';
+import scheduledJobRoutes from './routes/scheduledJob.routes.js';
 import { initDatabase } from './config/db.js';
 import { ConversationService } from './services/conversation.service.js';
 import { KeywordRuleService } from './services/keywordRule.service.js';
+import { SchedulerWorker } from './services/scheduler.worker.js';
 
 dotenv.config();
 
@@ -31,6 +33,7 @@ app.use('/api', apiRoutes);
 app.use('/api/knowledge-bases', knowledgeBaseRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
+app.use('/api/scheduled-jobs', scheduledJobRoutes);
 
 // Socket.io Connection
 io.on('connection', (socket: Socket) => {
@@ -54,6 +57,8 @@ async function start() {
   try {
     await initDatabase();
     await Promise.all([ConversationService.seedIfEmpty(), KeywordRuleService.seedIfEmpty()]);
+    // Iniciar worker de mensajes programados
+    SchedulerWorker.start(30000);
   } catch (err) {
     console.error('⚠️  No se pudo conectar/inicializar PostgreSQL. El servidor sigue arrancando,');
     console.error('    pero los endpoints de conversaciones y reglas de bot van a fallar hasta que');

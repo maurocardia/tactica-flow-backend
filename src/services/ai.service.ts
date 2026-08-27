@@ -157,4 +157,89 @@ export class AIService {
       return 'Lo siento, ocurrió un error al procesar tu mensaje. Un asesor te atenderá pronto.';
     }
   }
+
+  /**
+   * Redacta una propuesta de respuesta para el chat según el tono e instrucciones solicitadas.
+   */
+  static async draftReply(options: {
+    conversationText: string;
+    contactName?: string;
+    tone?: 'formal' | 'cordial' | 'directo';
+    instruction?: string;
+    userPrompt?: string;
+  }): Promise<string> {
+    if (!process.env.GEMINI_API_KEY) {
+      throw new Error('Falta GEMINI_API_KEY en el servidor.');
+    }
+
+    const toneMap = {
+      formal: 'Estilo formal y profesional, de trato respetuoso (usted), conciso y ejecutivo.',
+      cordial: 'Estilo cordial, cálido y empático, cercano pero educado y resolutivo.',
+      directo: 'Estilo comercial directo, dinámico, enfocado en concretar próximos pasos o ventas sin rodeos.'
+    };
+
+    const toneDescription = toneMap[options.tone || 'cordial'];
+
+    const prompt = `Actúa como un asistente experto en atención al cliente y ventas por WhatsApp para una empresa que utiliza TÁCTICA ERP.
+Tu tarea es redactar una respuesta para enviarle al cliente en WhatsApp.
+
+CONTEXTO DEL CONTACTO: ${options.contactName || 'Cliente'}
+TONO REQUERIDO: ${toneDescription}
+${options.instruction ? `INSTRUCCIÓN ESPECÍFICA / OBJETIVO: ${options.instruction}` : ''}
+${options.userPrompt ? `INDICACIÓN ADICIONAL DEL ASESOR: ${options.userPrompt}` : ''}
+
+HISTORIAL RECIENTE DE LA CONVERSACIÓN EN WHATSAPP:
+---
+${options.conversationText}
+---
+
+INSTRUCCIONES DE FORMATO:
+- Escribe ÚNICAMENTE el texto exacto que el asesor debe enviar por WhatsApp.
+- NO agregues introducciones como "Aquí tienes la respuesta", ni comillas envolventes, ni firmas ficticias innecesarias.
+- Usa saltos de línea y emojis con moderación según el tono seleccionado.`;
+
+    const result = await generateText({
+      model: google(GEMINI_MODEL),
+      temperature: 0.3,
+      prompt
+    });
+
+    return result.text.trim();
+  }
+
+  /**
+   * Transcribe un audio / nota de voz de WhatsApp usando las capacidades multimodales de Gemini.
+   */
+  static async transcribeAudio(audioBuffer: Buffer, mimeType: string = 'audio/ogg'): Promise<string> {
+    if (!process.env.GEMINI_API_KEY) {
+      throw new Error('Falta GEMINI_API_KEY en el servidor.');
+    }
+
+    try {
+      const result = await generateText({
+        model: google(GEMINI_MODEL),
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: 'Transcribe de forma fiel y completa todo el contenido hablado en este audio de WhatsApp. Devuelve ÚNICAMENTE el texto transcripto sin comentarios, sin introducciones ni marcas de tiempo.'
+              },
+              {
+                type: 'file',
+                data: audioBuffer,
+                mimeType
+              }
+            ]
+          }
+        ]
+      });
+
+      return result.text.trim() || '(Audio inaudible o sin voz detectada)';
+    } catch (error: any) {
+      console.error('❌ [AIService] Error transcribiendo audio:', error);
+      throw new Error(error.message || 'Error al transcribir el audio con IA');
+    }
+  }
 }
