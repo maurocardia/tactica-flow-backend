@@ -108,25 +108,4 @@ router.put('/bot-groups-enabled', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * POST /api/whatsapp/transcribe-audio
- * Transcribe un audio histórico de WhatsApp directamente vía Baileys.
- * Body: { dataId: string }  — el data-id del mensaje en el DOM de WhatsApp Web
- * No requiere que el usuario le dé Play al audio en el navegador.
- */
-router.post('/transcribe-audio', async (req: Request, res: Response) => {
-  const { dataId } = req.body;
-  if (!dataId || typeof dataId !== 'string') {
-    return res.status(400).json({ error: 'El campo "dataId" es requerido.' });
-  }
-
-  try {
-    const result = await WhatsappService.transcribeMessageById(req.user!.id, dataId);
-    res.json({ success: true, transcription: result.transcription });
-  } catch (error: any) {
-    console.error('❌ [/whatsapp/transcribe-audio]', error?.message || error);
-    res.status(500).json({ error: error.message || 'Error al transcribir el audio.' });
-  }
-});
-
 export default router;

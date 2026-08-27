@@ -302,63 +302,6 @@ export class WhatsappService {
   }
 
   /**
-   * Transcribe un audio histórico directamente desde los servidores de WhatsApp
-   * usando el data-id del DOM de WhatsApp Web (formato: fromMe_jid_msgId).
-   * No requiere que el usuario reproduzca el audio en el navegador.
-   */
-  static async transcribeMessageById(
-    userId: number,
-    dataId: string
-  ): Promise<{ transcription: string }> {
-    const session = sessions.get(userId);
-    if (!session || session.status !== 'connected') {
-      throw new Error('WhatsApp no está conectado. Verificá la sesión.');
-    }
-
-    // Parsear data-id de WhatsApp Web: "false_5491133...@s.whatsapp.net_3EB0..."
-    const parts = dataId.split('_');
-    if (parts.length < 3) {
-      throw new Error(`data-id inválido: ${dataId}`);
-    }
-
-    const fromMe = parts[0] === 'true';
-    // El jid puede contener @s.whatsapp.net o @g.us y puede tener guiones
-    // El formato es: fromMe _ jid _ messageId (el jid puede tener _ internamente para grupos)
-    const messageId = parts[parts.length - 1];
-    const remoteJid = parts.slice(1, parts.length - 1).join('_');
-
-    console.log(`🎙️ [WhatsApp] Transcribiendo mensaje histórico: remoteJid=${remoteJid} id=${messageId} fromMe=${fromMe}`);
-
-    // Construir el objeto WAMessage mínimo que necesita downloadMediaMessage
-    const msgStub: any = {
-      key: { remoteJid, fromMe, id: messageId },
-      message: {
-        audioMessage: {
-          mimetype: 'audio/ogg; codecs=opus',
-          url: '', // Baileys lo resuelve desde los servidores de WhatsApp
-        }
-      }
-    };
-
-    // Descargar el audio directamente de los servidores de WhatsApp vía Baileys
-    let audioBuffer: Buffer;
-    try {
-      const buf = await downloadMediaMessage(msgStub, 'buffer', {});
-      audioBuffer = buf as Buffer;
-    } catch (dlErr: any) {
-      throw new Error(`No se pudo descargar el audio: ${dlErr?.message || 'Error desconocido'}`);
-    }
-
-    if (!audioBuffer || audioBuffer.length === 0) {
-      throw new Error('El audio descargado está vacío. Es posible que ya haya expirado en los servidores de WhatsApp.');
-    }
-
-    const transcription = await AIService.transcribeAudio(audioBuffer, 'audio/ogg; codecs=opus');
-    console.log(`✅ [WhatsApp] Transcripción histórica: "${transcription}"`);
-    return { transcription };
-  }
-
-  /**
    * Reconecta automáticamente al iniciar el servidor todas las sesiones activas guardadas en PostgreSQL.
    */
   static async reconnectAllActiveSessions(): Promise<void> {
