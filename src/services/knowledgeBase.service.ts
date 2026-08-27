@@ -224,13 +224,13 @@ export class KnowledgeBaseService {
 
   /**
    * Obtiene el contexto de las bases de conocimiento ACTIVAS de forma optimizada.
-   * Si el texto acumulado es grande, aplica un filtro de relevancia (RAG ligero) extrayendo
-   * los fragmentos que mejor responden a la consulta del usuario, reduciendo el consumo de
-   * tokens en hasta un 95% y evitando exceder límites de cuota (TPM).
    *
-   * Devuelve también `isRelevant = true` solo si hay fragmentos con score > 0 para la consulta.
-   * Cuando `isRelevant = false`, los fragmentos son fallback sin coincidencia real y NO deben
-   * presentarse al usuario como "respaldados por la Base de Conocimiento".
+   * - Para KBs pequeñas (< 14.000 chars): envía todo el contenido a la IA sin chunking.
+   * - Para KBs grandes: aplica RAG ligero, seleccionando los fragmentos más relevantes.
+   *
+   * `isRelevant = true` SOLO si alguna keyword de la consulta aparece en la KB.
+   * Si no hay coincidencias, la IA puede usar el contexto para responder (grounding)
+   * pero NO se muestra el badge "respaldado por la Base de Conocimiento".
    */
   static async getActiveContext(query?: string): Promise<{ context: string; baseIds: number[]; isRelevant: boolean }> {
     const { rows } = await db.query(
@@ -249,23 +249,22 @@ export class KnowledgeBaseService {
     let totalLength = 0;
     rows.forEach((r) => (totalLength += (r.content || '').length));
 
-    // Si el contenido total es pequeño (<= 14.000 caracteres, ~3.500 tokens) o no hay query, enviamos todo directo.
-    // En ese caso marcamos como relevante si no hay query (modo chatbot sin consulta específica).
-    if (totalLength <= 14000 || !query || !query.trim()) {
+    // Si no hay query, enviamos todo directo y marcamos como no relevante (no hay pregunta que comparar)
+    if (!query || !query.trim()) {
       let context = '';
       for (const row of rows) {
         context += `=== Base: ${row.base_title} — Documento: ${row.filename} ===\n${row.content}\n\n`;
       }
-      return { context: context.trim(), baseIds: [...baseIds], isRelevant: !query || !query.trim() };
+      return { context: context.trim(), baseIds: [...baseIds], isRelevant: false };
     }
 
-    // --- Filtro de Relevancia Semántica y Palabras Clave (RAG Ligero) ---
+    // --- Siempre calculamos relevancia por keywords, independiente del tamaño ---
     const STOPWORDS = new Set([
       'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'de', 'del', 'a', 'al', 'en', 'para', 'por', 'con',
       'sin', 'sobre', 'que', 'como', 'cuando', 'donde', 'quien', 'cual', 'cuanto', 'este', 'esta', 'estos', 'estas',
       'hola', 'buenas', 'dias', 'tardes', 'noches', 'favor', 'gracias', 'porfa', 'podrias', 'puedes', 'tienen',
       'hay', 'ser', 'estar', 'hacer', 'mi', 'tu', 'su', 'nos', 'me', 'te', 'se', 'le', 'les', 'lo', 'y', 'o', 'pero',
-      'venden', 'vende', 'vender', 'tienes', 'tiene', 'consigo', 'conseguir', 'ustedes', 'nosotros'
+      'venden', 'vende', 'vender', 'tienes', 'tiene', 'consigo', 'conseguir', 'ustedes', 'nosotros', 'quiero', 'quiere'
     ]);
 
     const queryKeywords = query
@@ -303,33 +302,34 @@ export class KnowledgeBaseService {
         const chunkLower = chunkText.toLowerCase();
         let score = 0;
 
-        if (queryKeywords.length === 0) {
-          score = 0; // sin keywords semánticas: no marcamos como relevante
-        } else {
-          for (const kw of queryKeywords) {
-            const matches = (chunkLower.match(new RegExp(`\\b${kw}`, 'g')) || []).length;
-            score += matches * 10;
-            if (matches === 0 && chunkLower.includes(kw)) {
-              score += 3;
-            }
-          }
+        for (const kw of queryKeywords) {
+          const matches = (chunkLower.match(new RegExp(`\\b${kw}`, 'g')) || []).length;
+          score += matches * 10;
+          if (matches === 0 && chunkLower.includes(kw)) score += 3;
         }
 
-        chunks.push({
-          baseTitle: row.base_title,
-          filename: row.filename,
-          text: chunkText,
-          score
-        });
+        chunks.push({ baseTitle: row.base_title, filename: row.filename, text: chunkText, score });
       }
     }
 
     chunks.sort((a, b) => b.score - a.score);
 
-    // isRelevant = true solo si el fragmento con mayor puntaje tiene score real > 0
+    // isRelevant = true SOLO si hay al menos un fragmento con score real > 0
     const maxScore = chunks.length > 0 ? chunks[0].score : 0;
     const isRelevant = maxScore > 0;
 
+    // Para KBs pequeñas: enviamos todo el contenido (sin chunking) para no perder contexto,
+    // pero igualmente usamos el isRelevant calculado arriba
+    if (totalLength <= 14000) {
+      let context = '';
+      for (const row of rows) {
+        context += `=== Base: ${row.base_title} — Documento: ${row.filename} ===\n${row.content}\n\n`;
+      }
+      console.log(`⚡ [KnowledgeBaseService] KB pequeña: maxScore=${maxScore}, isRelevant=${isRelevant}, ${totalLength} chars totales.`);
+      return { context: context.trim(), baseIds: [...baseIds], isRelevant };
+    }
+
+    // Para KBs grandes: RAG optimizado, seleccionamos los chunks más relevantes
     let selectedLength = 0;
     const selectedChunks: Chunk[] = [];
     const MAX_FILTERED_CHARS = 12000;
@@ -351,7 +351,7 @@ export class KnowledgeBaseService {
     }
 
     console.log(
-      `⚡ [KnowledgeBaseService] Contexto: maxScore=${maxScore}, isRelevant=${isRelevant}, ${selectedLength} chars seleccionados de ${totalLength} totales.`
+      `⚡ [KnowledgeBaseService] KB grande RAG: maxScore=${maxScore}, isRelevant=${isRelevant}, ${selectedLength}/${totalLength} chars.`
     );
 
     return { context: context.trim(), baseIds: [...baseIds], isRelevant };
