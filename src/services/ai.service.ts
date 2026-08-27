@@ -29,6 +29,18 @@ function getSanitizedModelName(): string {
   return model || 'gemini-3.1-flash-lite';
 }
 
+function getSanitizedTranscribeModelName(): string {
+  let model = process.env.GEMINI_TRANSCRIBE_MODEL || process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
+  if (model.includes('=')) {
+    model = model.split('=').pop() || 'gemini-3.1-flash-lite';
+  }
+  model = model.trim().replace(/^['"]|['"]$/g, '');
+  if (!model.startsWith('gemini-')) {
+    model = `gemini-${model}`;
+  }
+  return model || 'gemini-3.1-flash-lite';
+}
+
 const google = createGoogleGenerativeAI({
   apiKey: getSanitizedApiKey()
 });
@@ -311,7 +323,7 @@ INSTRUCCIONES DE FORMATO:
 
     try {
       const result = await generateTextWithRetry({
-        model: google(getSanitizedModelName()),
+        model: google(getSanitizedTranscribeModelName()),
         messages: [
           {
             role: 'user',
