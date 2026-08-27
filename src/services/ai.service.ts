@@ -79,11 +79,6 @@ async function generateTextWithRetry(
   params: Parameters<typeof generateText>[0],
   maxRetries = 3
 ): Promise<Awaited<ReturnType<typeof generateText>>> {
-  // gemini-2.0-flash y gemini-1.5-flash fueron discontinuados por Google (confirmado con una
-  // llamada real: "This model ... is no longer available"). gemini-3.1-flash-lite es el modelo
-  // más liviano que sigue funcionando hoy — buen candidato para cuando se agota la cuota del
-  // modelo principal.
-  const fallbackModels = ['gemini-3.1-flash-lite'];
   let currentParams = { ...params };
 
   for (let attempt = 0; ; attempt++) {
@@ -92,20 +87,11 @@ async function generateTextWithRetry(
     } catch (error: any) {
       console.error(`❌ [AIService] Falló la llamada a Gemini (intento ${attempt + 1}/${maxRetries + 1}) — ${describeError(error)}`, error);
 
-      // Si se agotó la cuota TPM/RPM del modelo actual (429 / Quota exceeded), cambiamos automáticamente al modelo de respaldo
-      if (/quota|resource.?exhausted/i.test(error?.message || '')) {
-        const nextModel = fallbackModels.shift();
-        if (nextModel) {
-          console.warn(`🔄 [AIService] Límite de cuota alcanzado. Cambiando automáticamente al modelo de respaldo: ${nextModel}`);
-          currentParams.model = google(nextModel);
-          await new Promise((resolve) => setTimeout(resolve, 600));
-          continue;
-        }
-      }
-
-      if (attempt < maxRetries && isTransientError(error)) {
-        const delayMs = 1000 * (attempt + 1);
-        console.warn(`⚠️ [AIService] Reintentando en ${delayMs}ms...`);
+      if (attempt < maxRetries && (isTransientError(error) || /quota|rate.?limit/i.test(error?.message || ''))) {
+        // Extraer si Google nos indica el tiempo exacto de espera (ej: "Please retry in 8.26s")
+        const retryMatch = error?.message?.match(/retry in (\d+(\.\d+)?)s/i);
+        const delayMs = retryMatch ? Math.ceil(parseFloat(retryMatch[1]) * 1000) + 1200 : 1500 * (attempt + 1);
+        console.warn(`⏳ [AIService] Esperando ${delayMs}ms para reintentar con Gemini...`);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         continue;
       }
@@ -324,7 +310,7 @@ INSTRUCCIONES DE FORMATO:
     }
 
     try {
-      const result = await generateText({
+      const result = await generateTextWithRetry({
         model: google(getSanitizedModelName()),
         messages: [
           {
