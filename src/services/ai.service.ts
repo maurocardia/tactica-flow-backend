@@ -10,10 +10,32 @@ dotenv.config();
 // Hoy solo soportamos Gemini (AI_PROVIDER=gemini), pensado para extenderse a OpenAI/Anthropic
 // más adelante (ver Issue #8 - [EPIC] IA Multi-Provider) cuando exista selección por usuario.
 const AI_PROVIDER = process.env.AI_PROVIDER || 'gemini';
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
+
+function getSanitizedApiKey(): string {
+  let key = process.env.GEMINI_API_KEY || '';
+  if (key.includes('=')) {
+    key = key.split('=').pop() || '';
+  }
+  return key.trim().replace(/^['"]|['"]$/g, '');
+}
+
+function getSanitizedModelName(): string {
+  let model = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+  if (model.includes('=')) {
+    model = model.split('=').pop() || 'gemini-2.0-flash';
+  }
+  model = model.trim().replace(/^['"]|['"]$/g, '');
+  // Validar modelos reales soportados por Google Generative AI API
+  const validPrefixes = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.5-flash', 'gemini-2.5-pro'];
+  if (!validPrefixes.some((p) => model.startsWith(p))) {
+    console.warn(`⚠️ [AIService] Modelo "${model}" no es un nombre oficial válido de Gemini. Usando "gemini-2.0-flash" por defecto.`);
+    model = 'gemini-2.0-flash';
+  }
+  return model;
+}
 
 const google = createGoogleGenerativeAI({
-  apiKey: process.env.GEMINI_API_KEY || ''
+  apiKey: getSanitizedApiKey()
 });
 
 // --- Cola + reintentos para llamadas a Gemini ------------------------------------------------
@@ -251,7 +273,7 @@ export class AIService {
       }
 
       const result = await generateTextWithRetry({
-        model: google(GEMINI_MODEL),
+        model: google(getSanitizedModelName()),
         temperature: 0,
         system,
         messages: [...conversationHistory, { role: 'user', content: userMessage }]
@@ -259,9 +281,12 @@ export class AIService {
       });
 
       return result.text || 'Sin respuesta';
-    } catch (error) {
-      console.error('❌ Error en AIService:', error);
-      return 'Lo siento, ocurrió un error al procesar tu mensaje. Un asesor te atenderá pronto.';
+    } catch (error: any) {
+      console.error('❌ Error en AIService.processMessage:', error?.message || error);
+      if (!getSanitizedApiKey()) {
+        return 'Disculpas, la clave de IA (GEMINI_API_KEY) no está configurada en el servidor.';
+      }
+      return 'Disculpas, ocurrió un problema temporal con el servicio de inteligencia artificial. En instantes te responderá un asesor.';
     }
   }
 
@@ -275,7 +300,7 @@ export class AIService {
     instruction?: string;
     userPrompt?: string;
   }): Promise<string> {
-    if (!process.env.GEMINI_API_KEY) {
+    if (!getSanitizedApiKey()) {
       throw new Error('Falta GEMINI_API_KEY en el servidor.');
     }
 
@@ -306,7 +331,7 @@ INSTRUCCIONES DE FORMATO:
 - Usa saltos de línea y emojis con moderación según el tono seleccionado.`;
 
     const result = await generateText({
-      model: google(GEMINI_MODEL),
+      model: google(getSanitizedModelName()),
       temperature: 0.3,
       prompt
     });
@@ -318,13 +343,13 @@ INSTRUCCIONES DE FORMATO:
    * Transcribe un audio / nota de voz de WhatsApp usando las capacidades multimodales de Gemini.
    */
   static async transcribeAudio(audioBuffer: Buffer, mimeType: string = 'audio/ogg'): Promise<string> {
-    if (!process.env.GEMINI_API_KEY) {
+    if (!getSanitizedApiKey()) {
       throw new Error('Falta GEMINI_API_KEY en el servidor.');
     }
 
     try {
       const result = await generateText({
-        model: google(GEMINI_MODEL),
+        model: google(getSanitizedModelName()),
         messages: [
           {
             role: 'user',
@@ -343,10 +368,10 @@ INSTRUCCIONES DE FORMATO:
         ]
       });
 
-      return result.text.trim() || '(Audio inaudible o sin voz detectada)';
+      return result.text.trim();
     } catch (error: any) {
-      console.error('❌ [AIService] Error transcribiendo audio:', error);
-      throw new Error(error.message || 'Error al transcribir el audio con IA');
+      console.error('❌ Error al transcribir audio con Gemini:', error?.message || error);
+      throw new Error(`Error en transcripción de audio: ${error?.message || 'Error desconocido'}`);
     }
   }
 }
