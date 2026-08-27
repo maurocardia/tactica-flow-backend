@@ -24,6 +24,7 @@ export interface User {
   botEnabled: boolean;
   aiFallbackEnabled: boolean;
   aiCustomInstructions: string;
+  botGroupsEnabled: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -42,6 +43,7 @@ function mapUserRow(row: any): User {
     botEnabled: row.bot_enabled,
     aiFallbackEnabled: row.ai_fallback_enabled,
     aiCustomInstructions: row.ai_custom_instructions,
+    botGroupsEnabled: row.bot_groups_enabled,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -114,6 +116,15 @@ export class AuthService {
     const { rows } = await db.query(
       `UPDATE users SET ai_custom_instructions = $1, updated_at = now() WHERE id = $2 RETURNING *`,
       [aiCustomInstructions, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setBotGroupsEnabled(id: number, botGroupsEnabled: boolean): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET bot_groups_enabled = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [botGroupsEnabled, id]
     );
     if (rows.length === 0) return null;
     return mapUserRow(rows[0]);

@@ -16,7 +16,7 @@ export class BotEngineService {
     tacticaCredentials: TacticaCredentials = {},
     aiFallbackEnabled: boolean = true,
     customInstructions: string = ''
-  ): Promise<{ replyText: string; source: 'KEYWORD_RULE' | 'AI_AGENT' | 'TACTICA_API' } | null> {
+  ): Promise<{ replyText: string; source: 'KEYWORD_RULE' | 'AI_AGENT' | 'TACTICA_API'; sourceKbIds: number[] } | null> {
     const textLower = incomingText.trim().toLowerCase();
 
     // 1. Evaluar Reglas por Palabras Clave (Keyword Triggers)
@@ -27,8 +27,11 @@ export class BotEngineService {
 
         if (rule.action === 'CALL_AI') {
           let knowledgeContext = '';
+          let sourceKbIds: number[] = [];
           try {
-            knowledgeContext = await KnowledgeBaseService.getActiveContext();
+            const active = await KnowledgeBaseService.getActiveContext();
+            knowledgeContext = active.context;
+            sourceKbIds = active.baseIds;
           } catch (err) {
             console.error('⚠️ [BOT ENGINE] No se pudo obtener el contexto de KB:', err);
           }
@@ -36,21 +39,24 @@ export class BotEngineService {
           const aiReply = await AIService.processMessage(incomingText, conversationHistory, tacticaCredentials, knowledgeContext, customPrompt);
           return {
             replyText: aiReply,
-            source: 'AI_AGENT'
+            source: 'AI_AGENT',
+            sourceKbIds
           };
         }
 
         if (rule.action === 'HANDOFF') {
           return {
             replyText: rule.replyText || 'Te estamos transfiriendo con un asesor de nuestro equipo. En instantes te responderán por este chat.',
-            source: 'KEYWORD_RULE'
+            source: 'KEYWORD_RULE',
+            sourceKbIds: []
           };
         }
 
         if (rule.replyText) {
           return {
             replyText: rule.replyText,
-            source: 'KEYWORD_RULE'
+            source: 'KEYWORD_RULE',
+            sourceKbIds: []
           };
         }
       }
@@ -70,8 +76,11 @@ export class BotEngineService {
     // Contexto de la Base de Conocimiento activa (Issue #7): si falla la consulta a la DB, no
     // tumbamos el bot — seguimos sin contexto extra en vez de romper la respuesta al cliente.
     let knowledgeContext = '';
+    let sourceKbIds: number[] = [];
     try {
-      knowledgeContext = await KnowledgeBaseService.getActiveContext();
+      const active = await KnowledgeBaseService.getActiveContext();
+      knowledgeContext = active.context;
+      sourceKbIds = active.baseIds;
     } catch (err) {
       console.error('⚠️ [BOT ENGINE] No se pudo obtener el contexto de la Base de Conocimiento:', err);
     }
@@ -80,7 +89,8 @@ export class BotEngineService {
 
     return {
       replyText: aiReply,
-      source: 'AI_AGENT'
+      source: 'AI_AGENT',
+      sourceKbIds
     };
   }
 }
