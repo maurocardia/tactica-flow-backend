@@ -1,6 +1,6 @@
 {
   "name": "tactica-flow-backend",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Backend TypeScript para Tactica Flow - WhatsApp SaaS e Integración con Tactica ERP",
   "main": "dist/server.js",
   "type": "module",
