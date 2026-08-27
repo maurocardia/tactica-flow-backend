@@ -106,11 +106,26 @@ async function generateTextWithRetry(
   params: Parameters<typeof generateText>[0],
   maxRetries = 3
 ): Promise<Awaited<ReturnType<typeof generateText>>> {
+  const fallbackModels = ['gemini-2.0-flash', 'gemini-1.5-flash'];
+  let currentParams = { ...params };
+
   for (let attempt = 0; ; attempt++) {
     try {
-      return await enqueueGeminiCall(() => generateText({ maxRetries: 2, ...params }));
-    } catch (error) {
+      return await enqueueGeminiCall(() => generateText({ maxRetries: 2, ...currentParams }));
+    } catch (error: any) {
       console.error(`❌ [AIService] Falló la llamada a Gemini (intento ${attempt + 1}/${maxRetries + 1}) — ${describeError(error)}`, error);
+
+      // Si se agotó la cuota TPM/RPM del modelo actual (429 / Quota exceeded), cambiamos automáticamente al modelo de respaldo
+      if (/quota|resource.?exhausted/i.test(error?.message || '')) {
+        const nextModel = fallbackModels.shift();
+        if (nextModel) {
+          console.warn(`🔄 [AIService] Límite de cuota alcanzado. Cambiando automáticamente al modelo de respaldo: ${nextModel}`);
+          currentParams.model = google(nextModel);
+          await new Promise((resolve) => setTimeout(resolve, 600));
+          continue;
+        }
+      }
+
       if (attempt < maxRetries && isTransientError(error)) {
         const delayMs = 1000 * (attempt + 1);
         console.warn(`⚠️ [AIService] Reintentando en ${delayMs}ms...`);
