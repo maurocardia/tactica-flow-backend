@@ -25,13 +25,10 @@ function getSanitizedModelName(): string {
     model = model.split('=').pop() || 'gemini-2.0-flash';
   }
   model = model.trim().replace(/^['"]|['"]$/g, '');
-  // Validar modelos reales soportados por Google Generative AI API
-  const validPrefixes = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.5-flash', 'gemini-2.5-pro'];
-  if (!validPrefixes.some((p) => model.startsWith(p))) {
-    console.warn(`⚠️ [AIService] Modelo "${model}" no es un nombre oficial válido de Gemini. Usando "gemini-2.0-flash" por defecto.`);
-    model = 'gemini-2.0-flash';
+  if (!model.startsWith('gemini-')) {
+    model = `gemini-${model}`;
   }
-  return model;
+  return model || 'gemini-2.0-flash';
 }
 
 const google = createGoogleGenerativeAI({
