@@ -78,7 +78,8 @@ export async function usePostgresAuthState(userId: number): Promise<{
 
           for (const row of rows) {
             try {
-              const rawId = row.key_id.replace(`${type}-`, '');
+              const prefix = `${type}-`;
+              const rawId = row.key_id.startsWith(prefix) ? row.key_id.slice(prefix.length) : row.key_id;
               let value = JSON.parse(row.data, BufferJSON.reviver);
               if (type === 'app-state-sync-key' && value) {
                 value = proto.Message.AppStateSyncKeyData.fromObject(value);

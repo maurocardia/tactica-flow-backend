@@ -27,8 +27,9 @@ router.post('/disconnect', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/status', (req: Request, res: Response) => {
-  res.json({ status: WhatsappService.getStatus(req.user!.id) });
+router.get('/status', async (req: Request, res: Response) => {
+  const status = await WhatsappService.getStatusAsync(req.user!.id);
+  res.json({ status });
 });
 
 router.get('/qr', (req: Request, res: Response) => {
