@@ -108,4 +108,20 @@ router.put('/bot-groups-enabled', async (req: Request, res: Response) => {
   }
 });
 
+// Transcribe un audio por su identificador de mensaje a demanda vía Baileys
+router.post('/transcribe-audio', async (req: Request, res: Response) => {
+  try {
+    const { dataId } = req.body;
+    if (!dataId || typeof dataId !== 'string') {
+      return res.status(400).json({ error: 'El campo "dataId" es obligatorio' });
+    }
+
+    const transcription = await WhatsappService.transcribeAudioByDataId(req.user!.id, dataId);
+    res.json({ success: true, transcription });
+  } catch (error: any) {
+    console.error('❌ [WhatsApp Route] Error en /transcribe-audio:', error?.message || error);
+    res.status(500).json({ error: error.message || 'Error al transcribir audio' });
+  }
+});
+
 export default router;

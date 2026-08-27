@@ -302,6 +302,63 @@ export class WhatsappService {
   }
 
   /**
+   * Intenta descargar y transcribir un audio a demanda usando Baileys por su clave de mensaje.
+   */
+  static async transcribeAudioByDataId(userId: number, dataId: string): Promise<string> {
+    console.log(`🎙️ [WhatsApp Backend] Intentando transcribir audio por dataId "${dataId}" (usuario ${userId})...`);
+
+    // 1. Si ya existe en la base de datos de mensajes persistidos por Baileys
+    if (dataId.startsWith('db_audio_')) {
+      const msgId = parseInt(dataId.replace('db_audio_', ''), 10);
+      const { rows } = await db.query('SELECT text FROM conversation_messages WHERE id = $1', [msgId]);
+      if (rows.length > 0) {
+        const match = rows[0].text.match(/\[🎙️ Audio\]:\s*"?(.*?)"?$/);
+        if (match && match[1]) return match[1];
+      }
+    }
+
+    // 2. Si hay sesión de Baileys conectada
+    const session = sessions.get(userId);
+    if (!session || session.status !== 'connected') {
+      throw new Error('La sesión de Baileys no está conectada en el servidor. Dale Play al audio en WhatsApp Web para procesarlo con el navegador.');
+    }
+
+    const parts = dataId.split('_');
+    if (parts.length < 3) {
+      throw new Error(`Formato de identificador de mensaje no válido para Baileys: "${dataId}"`);
+    }
+
+    const fromMe = parts[0] === 'true';
+    let remoteJid = parts[1];
+    if (remoteJid.endsWith('@c.us')) {
+      remoteJid = remoteJid.replace('@c.us', '@s.whatsapp.net');
+    }
+    const messageId = parts.slice(2).join('_');
+
+    console.log(`🔍 [WhatsApp Backend] Descargando mensaje multimedia en Baileys: remoteJid=${remoteJid}, id=${messageId}`);
+
+    try {
+      const msgStub = {
+        key: {
+          remoteJid,
+          fromMe,
+          id: messageId
+        }
+      };
+      const audioBuffer = await downloadMediaMessage(msgStub as any, 'buffer', {});
+      if (audioBuffer && (audioBuffer as Buffer).length > 0) {
+        const transcription = await AIService.transcribeAudio(audioBuffer as Buffer, 'audio/ogg; codecs=opus');
+        console.log(`✅ [WhatsApp Backend] Audio transcripto con éxito vía Baileys: "${transcription}"`);
+        return transcription;
+      }
+    } catch (baileysErr: any) {
+      console.warn(`⚠️ [WhatsApp Backend] downloadMediaMessage falló en Baileys (${messageId}):`, baileysErr?.message || baileysErr);
+    }
+
+    throw new Error(`Baileys no encontró el archivo descargable de este audio en los servidores de WhatsApp. Por favor dale Play en WhatsApp Web y reintenta.`);
+  }
+
+  /**
    * Reconecta automáticamente al iniciar el servidor todas las sesiones activas guardadas en PostgreSQL.
    */
   static async reconnectAllActiveSessions(): Promise<void> {
