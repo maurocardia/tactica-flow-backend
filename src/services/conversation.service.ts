@@ -329,16 +329,27 @@ export class ConversationService {
         await client.query('DELETE FROM messages WHERE conversation_id = $1', [conversation.id]);
       }
 
-      for (const m of params.messages) {
-        if (!m.text || !m.text.trim()) continue;
-        const msgDate = m.createdAt ? new Date(m.createdAt) : new Date();
+      const validMessages = params.messages.filter((m) => m && m.text && m.text.trim());
+      if (validMessages.length > 0) {
+        const values: any[] = [];
+        const placeholders: string[] = [];
+        validMessages.forEach((m, i) => {
+          const idx = i * 4;
+          placeholders.push(`($${idx + 1}, $${idx + 2}, $${idx + 3}, $${idx + 4})`);
+          values.push(
+            conversation.id,
+            m.sender,
+            m.text.trim(),
+            m.createdAt ? new Date(m.createdAt) : new Date()
+          );
+        });
         await client.query(
-          `INSERT INTO messages (conversation_id, sender, text, created_at) VALUES ($1, $2, $3, $4)`,
-          [conversation.id, m.sender, m.text.trim(), msgDate]
+          `INSERT INTO messages (conversation_id, sender, text, created_at) VALUES ${placeholders.join(', ')}`,
+          values
         );
       }
 
-      const last = params.messages[params.messages.length - 1];
+      const last = validMessages[validMessages.length - 1];
       const lastText = last ? last.text : '';
       const lastDate = last && last.createdAt ? new Date(last.createdAt) : new Date();
 

@@ -138,14 +138,25 @@ router.post('/ai/transcribe', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Se requiere el audio en formato base64 (audioBase64).' });
     }
 
-    const cleanBase64 = audioBase64.replace(/^data:audio\/[a-z0-9]+;base64,/, '');
+    let detectedMime = mimeType;
+    if (typeof audioBase64 === 'string' && audioBase64.startsWith('data:')) {
+      const match = audioBase64.match(/^data:([^;]+);/);
+      if (match && match[1]) {
+        detectedMime = match[1];
+      }
+    }
+
+    const cleanBase64 = typeof audioBase64 === 'string' && audioBase64.includes('base64,')
+      ? audioBase64.split('base64,')[1]
+      : audioBase64;
+
     const audioBuffer = Buffer.from(cleanBase64, 'base64');
 
-    const transcription = await AIService.transcribeAudio(audioBuffer, mimeType);
+    const transcription = await AIService.transcribeAudio(audioBuffer, detectedMime);
 
     res.json({ success: true, transcription });
   } catch (error: any) {
-    console.error('❌ Error en /api/ai/transcribe:', error);
+    console.error('❌ Error en /api/ai/transcribe:', error?.message || error);
     res.status(500).json({ error: error.message || 'Error al transcribir el audio' });
   }
 });
