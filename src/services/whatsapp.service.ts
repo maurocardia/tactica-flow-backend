@@ -1,10 +1,11 @@
-import { makeWASocket, DisconnectReason, type WASocket } from '@whiskeysockets/baileys';
+import { makeWASocket, DisconnectReason, downloadMediaMessage, type WASocket } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode';
 import { io } from '../server.js';
 import { db } from '../config/db.js';
 import { ConversationService } from './conversation.service.js';
 import { BotEngineService } from './botEngine.service.js';
 import { AuthService } from './auth.service.js';
+import { AIService } from './ai.service.js';
 import { KnowledgeBaseService } from './knowledgeBase.service.js';
 import { usePostgresAuthState } from './postgresAuthState.js';
 
@@ -146,7 +147,36 @@ export class WhatsappService {
     // Switch "Responder también en grupos": por default solo atiende chats individuales
     if (isGroup && !user?.botGroupsEnabled && !fromMe) return;
 
-    const text: string | undefined = msg.message?.conversation || msg.message?.extendedTextMessage?.text;
+    let text: string | undefined = msg.message?.conversation || msg.message?.extendedTextMessage?.text;
+
+    // Detectar y transcribir notas de voz o audios entrantes de WhatsApp con Baileys + Gemini
+    const audioMessage = msg.message?.audioMessage;
+    if (!text && audioMessage) {
+      try {
+        console.log(`🎙️ [WhatsApp] Descargando nota de voz (${audioMessage.seconds || 0}s) con Baileys...`);
+        const audioBuffer = await downloadMediaMessage(
+          msg,
+          'buffer',
+          {},
+          {
+            logger: console as any,
+            reuploadRequest: socket.updateMediaMessage
+          }
+        );
+        if (audioBuffer && audioBuffer.length > 0) {
+          const transcription = await AIService.transcribeAudio(
+            audioBuffer as Buffer,
+            audioMessage.mimetype || 'audio/ogg'
+          );
+          text = `[🎙️ Audio]: "${transcription}"`;
+          console.log(`✅ [WhatsApp] Nota de voz transcripta con éxito: "${transcription}"`);
+        }
+      } catch (audioErr: any) {
+        console.error('⚠️ [WhatsApp] Error transcribiendo audio con Baileys/Gemini:', audioErr?.message || audioErr);
+        text = `[🎙️ Nota de voz (${audioMessage.seconds || 0}s)]`;
+      }
+    }
+
     if (!text) return;
 
     const participantJid: string | undefined = isGroup ? msg.key?.participant : undefined;
