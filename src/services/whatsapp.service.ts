@@ -154,22 +154,19 @@ export class WhatsappService {
     if (!text && audioMessage) {
       try {
         console.log(`🎙️ [WhatsApp] Descargando nota de voz (${audioMessage.seconds || 0}s) con Baileys...`);
-        const audioBuffer = await downloadMediaMessage(
-          msg,
-          'buffer',
-          {},
-          {
-            logger: console as any,
-            reuploadRequest: socket.updateMediaMessage
-          }
-        );
-        if (audioBuffer && audioBuffer.length > 0) {
+        // NOTA: No pasamos reuploadRequest porque socket.updateMediaMessage no siempre existe
+        // en todas las versiones de Baileys y causa crash. El download directo es suficiente.
+        const audioBuffer = await downloadMediaMessage(msg, 'buffer', {});
+        if (audioBuffer && (audioBuffer as Buffer).length > 0) {
           const transcription = await AIService.transcribeAudio(
             audioBuffer as Buffer,
-            audioMessage.mimetype || 'audio/ogg'
+            audioMessage.mimetype || 'audio/ogg; codecs=opus'
           );
           text = `[🎙️ Audio]: "${transcription}"`;
-          console.log(`✅ [WhatsApp] Nota de voz transcripta con éxito: "${transcription}"`);
+          console.log(`✅ [WhatsApp] Nota de voz transcripta: "${transcription}"`);
+        } else {
+          console.warn('⚠️ [WhatsApp] Buffer de audio vacío, no se puede transcribir.');
+          text = `[🎙️ Nota de voz (${audioMessage.seconds || 0}s)]`;
         }
       } catch (audioErr: any) {
         console.error('⚠️ [WhatsApp] Error transcribiendo audio con Baileys/Gemini:', audioErr?.message || audioErr);
