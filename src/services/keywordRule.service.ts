@@ -1,7 +1,14 @@
 import { randomUUID } from 'crypto';
 import { db } from '../config/db.js';
 
-export type RuleAction = 'STATIC_REPLY' | 'CALL_AI' | 'TACTICA_STOCK_LOOKUP' | 'CREATE_SUPPORT_TICKET';
+export type RuleAction =
+  | 'STATIC_REPLY'
+  | 'CALL_AI'
+  | 'TACTICA_STOCK_LOOKUP'
+  | 'CREATE_SUPPORT_TICKET'
+  | 'HANDOFF'
+  | 'DELAY'
+  | 'WEBHOOK';
 
 export interface KeywordRule {
   id: string;

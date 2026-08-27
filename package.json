@@ -26,6 +26,7 @@
     "pg": "^8.13.3",
     "qrcode": "^1.5.4",
     "socket.io": "^4.8.1",
+    "tactica-flow-backend": "file:",
     "zod": "^3.25.76"
   },
   "devDependencies": {

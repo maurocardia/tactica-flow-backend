@@ -22,12 +22,37 @@ export class BotEngineService {
     // 1. Evaluar Reglas por Palabras Clave (Keyword Triggers)
     for (const rule of await KeywordRuleService.listActiveRules()) {
       const matched = rule.keywords.some(kw => textLower.includes(kw));
-      if (matched && rule.replyText) {
-        console.log(`🤖 [BOT ENGINE] Regla activada por palabra clave: ${rule.id}`);
-        return {
-          replyText: rule.replyText,
-          source: 'KEYWORD_RULE'
-        };
+      if (matched) {
+        console.log(`🤖 [BOT ENGINE] Regla activada por palabra clave: ${rule.id} (${rule.name}, acción: ${rule.action})`);
+
+        if (rule.action === 'CALL_AI') {
+          let knowledgeContext = '';
+          try {
+            knowledgeContext = await KnowledgeBaseService.getActiveContext();
+          } catch (err) {
+            console.error('⚠️ [BOT ENGINE] No se pudo obtener el contexto de KB:', err);
+          }
+          const customPrompt = `${customInstructions}\nInstrucción de este bloque: ${rule.replyText}`;
+          const aiReply = await AIService.processMessage(incomingText, conversationHistory, tacticaCredentials, knowledgeContext, customPrompt);
+          return {
+            replyText: aiReply,
+            source: 'AI_AGENT'
+          };
+        }
+
+        if (rule.action === 'HANDOFF') {
+          return {
+            replyText: rule.replyText || 'Te estamos transfiriendo con un asesor de nuestro equipo. En instantes te responderán por este chat.',
+            source: 'KEYWORD_RULE'
+          };
+        }
+
+        if (rule.replyText) {
+          return {
+            replyText: rule.replyText,
+            source: 'KEYWORD_RULE'
+          };
+        }
       }
     }
 

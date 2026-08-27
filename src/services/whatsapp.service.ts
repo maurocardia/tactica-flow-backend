@@ -154,6 +154,14 @@ export class WhatsappService {
       io.emit('conversation_updated', inbound.conversation);
     }
 
+    // Cancelar mensajes programados que tengan activa la regla de "Detener si el contacto responde"
+    try {
+      const { ScheduledJobService } = await import('./scheduledJob.service.js');
+      await ScheduledJobService.cancelPendingOnContactReply(phone);
+    } catch (err) {
+      console.warn('[WhatsApp] Error cancelando programados al recibir respuesta:', err);
+    }
+
     // Switch "Habilitar bot" del panel (PUT /api/whatsapp/bot-enabled): el mensaje del cliente
     // queda igual registrado en la conversación arriba, pero si está apagado no autorespondemos.
     const user = await AuthService.getUserById(userId);
@@ -180,22 +188,41 @@ export class WhatsappService {
 
   static async disconnect(userId: number): Promise<void> {
     const session = sessions.get(userId);
-
-    // Corre siempre, aunque no haya sesión en memoria: permite limpiar un estado ya roto desde
-    // antes (ej. el backend se reinició de golpe con una sesión a medio conectar) sin necesidad
-    // de que el usuario pase primero por connect().
-    await clearSession(userId);
-
     if (session) {
       try {
-        await session.socket.logout();
+        session.socket.end(undefined);
       } catch (err) {
-        // Puede fallar si la conexión ya estaba caída del otro lado; igual ya limpiamos la sesión
-        // y las credenciales en disco arriba.
-        console.error(`⚠️ [WhatsApp] Error cerrando sesión del usuario ${userId}:`, err);
+        console.error(`⚠️ [WhatsApp] Error cerrando el socket del usuario ${userId}:`, err);
       }
     }
 
+    await clearSession(userId);
     emitStatus(userId, 'disconnected');
+  }
+
+  /**
+   * Envía un mensaje de texto saliente por WhatsApp usando la sesión activa del usuario (o la primera conectada).
+   */
+  static async sendTextMessage(phone: string, text: string, userId?: number): Promise<boolean> {
+    let targetSession: WhatsappSession | undefined;
+    if (userId) {
+      targetSession = sessions.get(userId);
+    } else {
+      for (const s of sessions.values()) {
+        if (s.status === 'connected') {
+          targetSession = s;
+          break;
+        }
+      }
+    }
+
+    if (!targetSession || targetSession.status !== 'connected') {
+      throw new Error('No hay una sesión de WhatsApp conectada para enviar el mensaje.');
+    }
+
+    const cleanPhone = phone.replace(/[^0-9]/g, '');
+    const jid = `${cleanPhone}@s.whatsapp.net`;
+    await targetSession.socket.sendMessage(jid, { text });
+    return true;
   }
 }

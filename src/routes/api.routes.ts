@@ -68,6 +68,51 @@ router.post('/ai/chat', async (req: Request, res: Response) => {
   }
 });
 
+// Endpoint para redactar borradores de respuestas con IA según tono y contexto
+router.post('/ai/draft', async (req: Request, res: Response) => {
+  try {
+    const { conversationText, contactName, tone, instruction, userPrompt } = req.body;
+
+    if (!conversationText) {
+      return res.status(400).json({ error: 'El historial de la conversación (conversationText) es obligatorio.' });
+    }
+
+    const draft = await AIService.draftReply({
+      conversationText,
+      contactName,
+      tone,
+      instruction,
+      userPrompt
+    });
+
+    res.json({ success: true, draft });
+  } catch (error: any) {
+    console.error('❌ Error en /api/ai/draft:', error);
+    res.status(500).json({ error: error.message || 'Error al generar borrador de respuesta' });
+  }
+});
+
+// Endpoint para transcribir audios / notas de voz con IA
+router.post('/ai/transcribe', async (req: Request, res: Response) => {
+  try {
+    const { audioBase64, mimeType = 'audio/ogg' } = req.body;
+
+    if (!audioBase64) {
+      return res.status(400).json({ error: 'Se requiere el audio en formato base64 (audioBase64).' });
+    }
+
+    const cleanBase64 = audioBase64.replace(/^data:audio\/[a-z0-9]+;base64,/, '');
+    const audioBuffer = Buffer.from(cleanBase64, 'base64');
+
+    const transcription = await AIService.transcribeAudio(audioBuffer, mimeType);
+
+    res.json({ success: true, transcription });
+  } catch (error: any) {
+    console.error('❌ Error en /api/ai/transcribe:', error);
+    res.status(500).json({ error: error.message || 'Error al transcribir el audio' });
+  }
+});
+
 // Conversation Management Endpoints
 router.get('/conversations', async (req: Request, res: Response) => {
   try {

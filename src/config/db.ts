@@ -126,6 +126,24 @@ const SCHEMA_SQL = `
   -- fijas y del contenido de la Base de Conocimiento — ver AIService.processMessage. Vacío por
   -- default: no cambia el comportamiento de nadie que no lo configure.
   ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_custom_instructions TEXT NOT NULL DEFAULT '';
+
+  -- Mensajes Programados y Tareas Automatizadas (Feature #5)
+  CREATE TABLE IF NOT EXISTS scheduled_jobs (
+    id SERIAL PRIMARY KEY,
+    user_id INT REFERENCES users(id) ON DELETE SET NULL,
+    contact_name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    message_text TEXT NOT NULL,
+    execute_at TIMESTAMPTZ NOT NULL,
+    recurrence TEXT NOT NULL DEFAULT 'once',
+    stop_on_reply BOOLEAN NOT NULL DEFAULT true,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'cancelled', 'failed')),
+    sent_at TIMESTAMPTZ,
+    error_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_execute ON scheduled_jobs(status, execute_at);
 `;
 
 /**
