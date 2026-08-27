@@ -213,28 +213,42 @@ export class KnowledgeBaseService {
   }
 
   /**
+   * IDs de las bases activas ahora mismo — versión liviana de getActiveContext() para cuando
+   * solo hace falta filtrar (ver ConversationService.toAiHistory), sin traer el contenido de
+   * los documentos.
+   */
+  static async getActiveBaseIds(): Promise<number[]> {
+    const { rows } = await db.query('SELECT id FROM knowledge_bases WHERE is_active = true');
+    return rows.map((r) => r.id);
+  }
+
+  /**
    * Concatena el texto de todos los documentos de todas las bases ACTIVAS (una sola base de
    * conocimiento global para toda la empresa por ahora, sin filtrar por usuario — no hay auth
    * todavía, ver Issue #6). Se inyecta en el system prompt del bot desde
    * AIService.processMessage. Trunca a MAX_CONTEXT_CHARS para no disparar el consumo de tokens
-   * por mensaje.
+   * por mensaje. También devuelve los IDs de las bases que aportaron contenido, para que
+   * ConversationService pueda "etiquetar" con qué bases se generó cada respuesta del bot (ver
+   * toAiHistory) y así filtrarlas del contexto futuro si esa base se desactiva más adelante.
    */
-  static async getActiveContext(): Promise<string> {
+  static async getActiveContext(): Promise<{ context: string; baseIds: number[] }> {
     const { rows } = await db.query(
-      `SELECT kb.title AS base_title, d.filename, d.content
+      `SELECT kb.id AS base_id, kb.title AS base_title, d.filename, d.content
        FROM knowledge_documents d
        JOIN knowledge_bases kb ON kb.id = d.knowledge_base_id
        WHERE kb.is_active = true
        ORDER BY kb.created_at ASC, d.created_at ASC`
     );
 
-    if (rows.length === 0) return '';
+    if (rows.length === 0) return { context: '', baseIds: [] };
 
     let context = '';
+    const baseIds = new Set<number>();
     for (const row of rows) {
       context += `=== Base: ${row.base_title} — Documento: ${row.filename} ===\n${row.content}\n\n`;
+      baseIds.add(row.base_id);
     }
 
-    return context.trim();
+    return { context: context.trim(), baseIds: [...baseIds] };
   }
 }

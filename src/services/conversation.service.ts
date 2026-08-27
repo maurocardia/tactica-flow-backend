@@ -9,6 +9,10 @@ export interface ConversationMessage {
   sender: MessageSender;
   text: string;
   createdAt: string; // ISO timestamp
+  // Bases de conocimiento activas en el momento en que se generó este mensaje (vacío para
+  // mensajes del cliente, respuestas por regla fija, o respuestas de IA sin ninguna base
+  // activa). Ver toAiHistory().
+  sourceKbIds: number[];
 }
 
 export interface Conversation {
@@ -21,6 +25,9 @@ export interface Conversation {
   tag: string;
   status: ConversationStatus;
   userId: number | null;
+  // Nombre del grupo de WhatsApp si esta conversación es la de un participante puntual dentro
+  // de un grupo (ver WhatsappService.handleIncomingMessage) — null en chats individuales.
+  groupName: string | null;
 }
 
 // --- Row -> domain object mapping (Postgres devuelve snake_case) ---
@@ -36,6 +43,7 @@ function mapConversationRow(row: any): Conversation {
     tag: row.tag,
     status: row.status,
     userId: row.user_id,
+    groupName: row.group_name,
   };
 }
 
@@ -46,6 +54,7 @@ function mapMessageRow(row: any): ConversationMessage {
     sender: row.sender,
     text: row.text,
     createdAt: new Date(row.created_at).toISOString(),
+    sourceKbIds: row.source_kb_ids ?? [],
   };
 }
 
@@ -162,13 +171,26 @@ export class ConversationService {
     /no dispongo de informaci[oó]n/i,
   ];
 
+  /**
+   * `activeBaseIds` son las bases de conocimiento activas AHORA (ver
+   * KnowledgeBaseService.getActiveBaseIds/getActiveContext). Un mensaje del bot generado usando
+   * una o más bases (msg.sourceKbIds) se descarta del historial si NINGUNA de esas bases sigue
+   * activa: su contenido ya no es válido y no debe seguir "pesando" en la conversación (ej. el
+   * bot no debe seguir hablando de productos de una base que se desactivó). Los mensajes del
+   * cliente y las respuestas sin base asociada (reglas fijas, saludos genéricos) siempre se
+   * conservan — así la charla sigue siendo continua y reconoce al contacto en vez de arrancar de
+   * cero cada vez.
+   */
   static toAiHistory(
     messages: ConversationMessage[],
+    activeBaseIds: number[] = [],
     limit = 20
   ): { role: 'user' | 'assistant'; content: string }[] {
+    const activeSet = new Set(activeBaseIds);
     const filtered = messages.filter((msg) => {
       if (msg.sender === 'bot' || msg.sender === 'agent') {
-        return !ConversationService.POISONED_PATTERNS.some((p) => p.test(msg.text));
+        if (ConversationService.POISONED_PATTERNS.some((p) => p.test(msg.text))) return false;
+        if (msg.sourceKbIds.length > 0 && !msg.sourceKbIds.some((id) => activeSet.has(id))) return false;
       }
       return true;
     });
@@ -189,29 +211,59 @@ export class ConversationService {
    * conversación para ese usuario: la crea en el Inbox automáticamente, en modo `bot` (la está
    * atendiendo el motor del bot, no un agente humano). Si ya existe, la devuelve tal cual.
    */
-  static async findOrCreateByPhone(phone: string, name: string, userId: number): Promise<Conversation> {
+  static async findOrCreateByPhone(
+    phone: string,
+    name: string,
+    userId: number,
+    groupName: string | null = null
+  ): Promise<Conversation> {
     const existing = await db.query(
       'SELECT * FROM conversations WHERE phone = $1 AND user_id = $2',
       [phone, userId]
     );
 
     if (existing.rows.length > 0) {
-      return mapConversationRow(existing.rows[0]);
+      const current = mapConversationRow(existing.rows[0]);
+      // Backfill: conversaciones creadas antes de que existiera group_name (o si el grupo
+      // cambió de nombre en WhatsApp) se actualizan acá en vez de quedar desactualizadas para
+      // siempre — si no, listByGroupName() nunca las encuentra aunque el grupo sea el mismo.
+      if (groupName && current.groupName !== groupName) {
+        const { rows } = await db.query(
+          `UPDATE conversations SET group_name = $1 WHERE id = $2 RETURNING *`,
+          [groupName, current.id]
+        );
+        return mapConversationRow(rows[0]);
+      }
+      return current;
     }
 
     const { rows } = await db.query(
-      `INSERT INTO conversations (name, phone, tag, status, user_id)
-       VALUES ($1, $2, $3, 'bot', $4) RETURNING *`,
-      [name, phone, 'WhatsApp', userId]
+      `INSERT INTO conversations (name, phone, tag, status, user_id, group_name)
+       VALUES ($1, $2, $3, 'bot', $4, $5) RETURNING *`,
+      [name, phone, 'WhatsApp', userId, groupName]
     );
 
     return mapConversationRow(rows[0]);
   }
 
+  /**
+   * Todas las conversaciones (una por participante) que pertenecen al mismo grupo real de
+   * WhatsApp, para el usuario dado. Usado por AiSummaryModal en el panel: en vez de leer la
+   * pantalla para adivinar quién escribió qué, resume con los datos reales guardados acá.
+   */
+  static async listByGroupName(groupName: string, userId: number): Promise<Conversation[]> {
+    const { rows } = await db.query(
+      'SELECT * FROM conversations WHERE group_name = $1 AND user_id = $2 ORDER BY name ASC',
+      [groupName, userId]
+    );
+    return rows.map(mapConversationRow);
+  }
+
   static async addMessage(
     conversationId: number,
     sender: MessageSender,
-    text: string
+    text: string,
+    sourceKbIds: number[] = []
   ): Promise<{ message: ConversationMessage; conversation: Conversation } | null> {
     const client = await db.connect();
     try {
@@ -224,8 +276,8 @@ export class ConversationService {
       }
 
       const msgResult = await client.query(
-        `INSERT INTO messages (conversation_id, sender, text) VALUES ($1, $2, $3) RETURNING *`,
-        [conversationId, sender, text]
+        `INSERT INTO messages (conversation_id, sender, text, source_kb_ids) VALUES ($1, $2, $3, $4) RETURNING *`,
+        [conversationId, sender, text, sourceKbIds]
       );
 
       const unreadDelta = sender === 'customer' ? convResult.rows[0].unread + 1 : sender === 'agent' ? 0 : convResult.rows[0].unread;

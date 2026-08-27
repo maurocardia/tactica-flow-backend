@@ -111,6 +111,13 @@ const SCHEMA_SQL = `
   -- dueño; ADD COLUMN IF NOT EXISTS porque la tabla "conversations" ya existe en producción.
   ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id INT REFERENCES users(id);
 
+  -- Nombre del grupo de WhatsApp cuando esta conversación es la de UN participante puntual
+  -- dentro de un grupo (ver WhatsappService.handleIncomingMessage: cada participante tiene su
+  -- propia conversación con su propio historial, no una sola para todo el grupo). NULL en chats
+  -- individuales. Permite que el panel identifique y liste a todos los participantes de un
+  -- mismo grupo real — ver GET /api/conversations y AiSummaryModal.
+  ALTER TABLE conversations ADD COLUMN IF NOT EXISTS group_name TEXT;
+
   -- ADD COLUMN IF NOT EXISTS porque la tabla "users" ya existe en producción desde antes de este
   -- interruptor: apaga/prende el auto-responder de WhatsApp (Baileys) para este usuario.
   ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_enabled BOOLEAN NOT NULL DEFAULT true;
@@ -126,6 +133,20 @@ const SCHEMA_SQL = `
   -- fijas y del contenido de la Base de Conocimiento — ver AIService.processMessage. Vacío por
   -- default: no cambia el comportamiento de nadie que no lo configure.
   ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_custom_instructions TEXT NOT NULL DEFAULT '';
+
+  -- Switch "Responder también en grupos" del panel: por default el bot solo autoresponde en
+  -- chats individuales (ver WhatsappService.handleIncomingMessage, que hoy ignora todo mensaje
+  -- de un @g.us). Default false para no cambiar el comportamiento de nadie — activarlo hace que
+  -- el bot también entre a responder en los grupos de WhatsApp del usuario.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_groups_enabled BOOLEAN NOT NULL DEFAULT false;
+
+  -- Qué bases de conocimiento estaban activas cuando se generó cada respuesta del bot (vacío
+  -- para mensajes del cliente, respuestas por regla fija, o respuestas de IA sin ninguna base
+  -- activa en ese momento). Sirve para filtrar el historial que se le manda a la IA como
+  -- contexto: si una base se desactiva, sus respuestas viejas dejan de "pesar" en charlas
+  -- futuras con el mismo contacto, sin necesidad de borrar el historial — ver
+  -- ConversationService.toAiHistory().
+  ALTER TABLE messages ADD COLUMN IF NOT EXISTS source_kb_ids INTEGER[] NOT NULL DEFAULT '{}';
 `;
 
 /**

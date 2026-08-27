@@ -91,4 +91,20 @@ router.put('/ai-custom-instructions', async (req: Request, res: Response) => {
   }
 });
 
+// Enciende/apaga que el bot también autoresponda en grupos de WhatsApp (por default solo lo
+// hace en chats individuales) — ver WhatsappService.handleIncomingMessage.
+router.put('/bot-groups-enabled', async (req: Request, res: Response) => {
+  const { enabled } = req.body;
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ error: 'El campo "enabled" es requerido y debe ser booleano' });
+  }
+
+  try {
+    const user = await AuthService.setBotGroupsEnabled(req.user!.id, enabled);
+    res.json({ botGroupsEnabled: user?.botGroupsEnabled ?? enabled });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar la respuesta en grupos' });
+  }
+});
+
 export default router;

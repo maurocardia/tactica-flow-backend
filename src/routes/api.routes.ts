@@ -5,6 +5,7 @@ import { BotEngineService } from '../services/botEngine.service.js';
 import { KeywordRuleService, type RuleAction } from '../services/keywordRule.service.js';
 import { ConversationService, type MessageSender } from '../services/conversation.service.js';
 import { AuthService } from '../services/auth.service.js';
+import { KnowledgeBaseService } from '../services/knowledgeBase.service.js';
 import { io } from '../server.js';
 
 const router = Router();
@@ -57,11 +58,14 @@ router.post('/tactica/contacts', async (req: Request, res: Response) => {
   }
 });
 
-// Endpoint para probar respuesta de IA
+// Usado por utilidades de IA del panel (resumir charla, redactar, etc. — NO es el bot que le
+// responde a clientes, ver /bot/reply para eso), así que corre en modo "utility": sin el system
+// prompt estricto de "solo responder desde la Base de Conocimiento" (si no, se negaba a resumir
+// diciendo "no tengo una base de conocimiento configurada" en vez de hacer la tarea pedida).
 router.post('/ai/chat', async (req: Request, res: Response) => {
   try {
     const { message, history, tacticaCredentials } = req.body;
-    const aiResponse = await AIService.processMessage(message, history || [], tacticaCredentials || {});
+    const aiResponse = await AIService.processMessage(message, history || [], tacticaCredentials || {}, '', '', 'utility');
     res.json({ reply: aiResponse });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al procesar consulta de IA' });
@@ -126,8 +130,10 @@ router.post('/conversations/:id/messages', async (req: Request, res: Response) =
       // Historial previo a este mensaje (que ya se logueó arriba como `result.message`), para
       // que la IA tenga contexto de la conversación en vez de responder cada mensaje aislado.
       const priorMessages = (await ConversationService.getMessages(conversationId)) ?? [];
+      const activeBaseIds = await KnowledgeBaseService.getActiveBaseIds();
       const history = ConversationService.toAiHistory(
-        priorMessages.filter((msg) => msg.id !== result.message.id)
+        priorMessages.filter((msg) => msg.id !== result.message.id),
+        activeBaseIds
       );
 
       // Conversaciones sin dueño (legacy, de antes del multi-tenant de WhatsApp) no tienen de
@@ -146,7 +152,7 @@ router.post('/conversations/:id/messages', async (req: Request, res: Response) =
       );
 
       const botReplyResult = botResult
-        ? await ConversationService.addMessage(conversationId, 'bot', botResult.replyText)
+        ? await ConversationService.addMessage(conversationId, 'bot', botResult.replyText, botResult.sourceKbIds)
         : null;
 
       if (botReplyResult) {
