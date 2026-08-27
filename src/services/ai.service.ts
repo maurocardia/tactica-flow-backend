@@ -256,7 +256,9 @@ export class AIService {
     tone?: 'formal' | 'cordial' | 'directo';
     instruction?: string;
     userPrompt?: string;
-  }): Promise<string> {
+    knowledgeContext?: string;
+    foundInKb?: boolean;
+  }): Promise<{ draft: string; foundInKb: boolean }> {
     if (!getSanitizedApiKey()) {
       throw new Error('Falta GEMINI_API_KEY en el servidor.');
     }
@@ -269,7 +271,19 @@ export class AIService {
 
     const toneDescription = toneMap[options.tone || 'cordial'];
 
-    const prompt = `Actúa como un asistente experto en atención al cliente y ventas por WhatsApp para una empresa que utiliza TÁCTICA ERP.
+    let kbInstructions = '';
+    if (options.knowledgeContext && options.foundInKb) {
+      kbInstructions = `
+INFORMACIÓN DE LA BASE DE CONOCIMIENTO DE LA EMPRESA (FUENTE OFICIAL):
+${options.knowledgeContext}
+
+REGLA DE CONOCIMIENTO: Utiliza la información provista en la Base de Conocimiento para responder con precisión las preguntas sobre productos, especificaciones, precios, políticas y procedimientos de la empresa.`;
+    } else {
+      kbInstructions = `
+NOTA: No se encontró información específica en la Base de Conocimiento de la empresa para esta consulta puntual. Redacta una respuesta amable, profesional y orientada a la resolución basada en el contexto de la conversación, indicando con cordialidad que se verificará el detalle o se consultará con el área correspondiente si es necesario, sin inventar políticas o datos específicos no provistos.`;
+    }
+
+    const prompt = `Actúa como un asesor experto en atención al cliente y ventas por WhatsApp para una empresa que utiliza TÁCTICA ERP.
 Tu tarea es redactar una respuesta para enviarle al cliente en WhatsApp.
 
 CONTEXTO DEL CONTACTO: ${options.contactName || 'Cliente'}
@@ -281,6 +295,7 @@ HISTORIAL RECIENTE DE LA CONVERSACIÓN EN WHATSAPP:
 ---
 ${options.conversationText}
 ---
+${kbInstructions}
 
 INSTRUCCIONES DE FORMATO:
 - Escribe ÚNICAMENTE el texto exacto que el asesor debe enviar por WhatsApp.
@@ -293,7 +308,10 @@ INSTRUCCIONES DE FORMATO:
       prompt
     });
 
-    return result.text.trim();
+    return {
+      draft: result.text.trim(),
+      foundInKb: !!options.foundInKb
+    };
   }
 
   static async transcribeAudio(audioBuffer: Buffer, mimeType: string = 'audio/ogg'): Promise<string> {

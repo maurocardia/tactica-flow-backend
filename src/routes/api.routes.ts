@@ -72,7 +72,7 @@ router.post('/ai/chat', async (req: Request, res: Response) => {
   }
 });
 
-// Endpoint para redactar borradores de respuestas con IA según tono y contexto
+// Endpoint para redactar borradores de respuestas con IA según tono, contexto y Base de Conocimiento
 router.post('/ai/draft', async (req: Request, res: Response) => {
   try {
     const { conversationText, contactName, tone, instruction, userPrompt } = req.body;
@@ -81,15 +81,39 @@ router.post('/ai/draft', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'El historial de la conversación (conversationText) es obligatorio.' });
     }
 
-    const draft = await AIService.draftReply({
+    // 1. Consultar prioritariamente la Base de Conocimiento activa
+    const searchTarget = `${conversationText.slice(-800)} ${instruction || ''} ${userPrompt || ''}`.trim();
+    let knowledgeContext = '';
+    let foundInKb = false;
+    let baseIds: number[] = [];
+
+    try {
+      const active = await KnowledgeBaseService.getActiveContext(searchTarget);
+      if (active.context && active.context.length > 30) {
+        knowledgeContext = active.context;
+        foundInKb = true;
+        baseIds = active.baseIds;
+      }
+    } catch (kbErr) {
+      console.warn('⚠️ [API /ai/draft] Error consultando Base de Conocimiento:', kbErr);
+    }
+
+    const { draft } = await AIService.draftReply({
       conversationText,
       contactName,
       tone,
       instruction,
-      userPrompt
+      userPrompt,
+      knowledgeContext,
+      foundInKb
     });
 
-    res.json({ success: true, draft });
+    res.json({
+      success: true,
+      draft,
+      foundInKb,
+      sourceKbIds: baseIds
+    });
   } catch (error: any) {
     console.error('❌ Error en /api/ai/draft:', error);
     res.status(500).json({ error: error.message || 'Error al generar borrador de respuesta' });
