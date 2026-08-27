@@ -19,6 +19,13 @@ export class BotEngineService {
   ): Promise<{ replyText: string; source: 'KEYWORD_RULE' | 'AI_AGENT' | 'TACTICA_API'; sourceKbIds: number[] } | null> {
     const textLower = incomingText.trim().toLowerCase();
 
+    // 0. Construir consulta contextual con el historial reciente para retener entidades (ej: "empresa")
+    const historyText = conversationHistory
+      .slice(-4)
+      .map((m: any) => (typeof m === 'string' ? m : m.content || m.text || ''))
+      .join(' ');
+    const contextualQuery = `${historyText} ${incomingText}`.trim();
+
     // 1. Evaluar Reglas por Palabras Clave (Keyword Triggers)
     for (const rule of await KeywordRuleService.listActiveRules()) {
       const matched = rule.keywords.some(kw => textLower.includes(kw));
@@ -29,7 +36,7 @@ export class BotEngineService {
           let knowledgeContext = '';
           let sourceKbIds: number[] = [];
           try {
-            const active = await KnowledgeBaseService.getActiveContext(incomingText);
+            const active = await KnowledgeBaseService.getActiveContext(contextualQuery || incomingText);
             knowledgeContext = active.context;
             sourceKbIds = active.baseIds;
           } catch (err) {
@@ -78,7 +85,7 @@ export class BotEngineService {
     let knowledgeContext = '';
     let sourceKbIds: number[] = [];
     try {
-      const active = await KnowledgeBaseService.getActiveContext(incomingText);
+      const active = await KnowledgeBaseService.getActiveContext(contextualQuery || incomingText);
       knowledgeContext = active.context;
       sourceKbIds = active.baseIds;
     } catch (err) {
