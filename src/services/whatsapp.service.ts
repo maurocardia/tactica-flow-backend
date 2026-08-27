@@ -1,11 +1,12 @@
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, type WASocket } from '@whiskeysockets/baileys';
+import { makeWASocket, DisconnectReason, type WASocket } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode';
-import { rm } from 'fs/promises';
 import { io } from '../server.js';
+import { db } from '../config/db.js';
 import { ConversationService } from './conversation.service.js';
 import { BotEngineService } from './botEngine.service.js';
 import { AuthService } from './auth.service.js';
 import { KnowledgeBaseService } from './knowledgeBase.service.js';
+import { usePostgresAuthState } from './postgresAuthState.js';
 
 export type WhatsappConnectionStatus = 'disconnected' | 'connecting' | 'qr_ready' | 'connected';
 
@@ -15,36 +16,13 @@ interface WhatsappSession {
   qrDataUrl: string | null;
 }
 
-// Sesiones en memoria, una por usuario (multi-tenant: cada usuario escanea su propio WhatsApp).
-// Si el proceso se reinicia, las sesiones ya autenticadas se pueden retomar solas gracias a las
-// credenciales persistidas en disco por useMultiFileAuthState (no hace falta volver a escanear
-// el QR, salvo que la sesión haya sido deslogueada desde el teléfono o se haya llamado a disconnect()).
+// Sesiones en memoria, una por usuario (multi-tenant).
+// Las credenciales se persisten de forma permanente en PostgreSQL (tabla whatsapp_sessions),
+// por lo que reinicios o nuevos despliegues en Railway retoman la sesión automáticamente.
 const sessions = new Map<number, WhatsappSession>();
-
-function authStateDir(userId: number): string {
-  return `baileys_auth_state_${userId}`;
-}
 
 function emitStatus(userId: number, status: WhatsappConnectionStatus) {
   io.emit('whatsapp_status_updated', { userId, status });
-}
-
-/**
- * Borra la sesión en memoria y las credenciales persistidas en disco de un usuario. Hace falta
- * llamar esto (no alcanza con sacar la sesión del Map) cada vez que la sesión de WhatsApp deja
- * de ser válida — logout desde el teléfono o logout disparado por nosotros — porque
- * useMultiFileAuthState() reutiliza lo que haya en esa carpeta en el próximo connect(). Si no se
- * borra, el siguiente intento de conexión falla con las credenciales viejas ya invalidadas por
- * WhatsApp.
- */
-async function clearSession(userId: number): Promise<void> {
-  sessions.delete(userId);
-
-  try {
-    await rm(authStateDir(userId), { recursive: true, force: true });
-  } catch (err) {
-    console.error(`⚠️ [WhatsApp] Error borrando las credenciales locales del usuario ${userId}:`, err);
-  }
 }
 
 export class WhatsappService {
@@ -62,8 +40,11 @@ export class WhatsappService {
       return { status: existing.status };
     }
 
-    const { state, saveCreds } = await useMultiFileAuthState(authStateDir(userId));
-    const socket = makeWASocket({ auth: state });
+    const { state, saveCreds, clearCreds } = await usePostgresAuthState(userId);
+    const socket = makeWASocket({
+      auth: state,
+      printQRInTerminal: false
+    });
 
     const session: WhatsappSession = { socket, status: 'connecting', qrDataUrl: null };
     sessions.set(userId, session);
@@ -84,21 +65,18 @@ export class WhatsappService {
         session.status = 'connected';
         session.qrDataUrl = null;
         emitStatus(userId, 'connected');
+        console.log(`✅ [WhatsApp] Sesión conectada y lista para el usuario ${userId}`);
       }
 
       if (connection === 'close') {
-        // lastDisconnect.error es un Boom; el código HTTP-like que nos importa (401 = deslogueado
-        // desde el teléfono, ej. "Cerrar sesión" en WhatsApp > Dispositivos vinculados) viene en
-        // output.statusCode. Cualquier otro motivo de cierre (timeout, conexión perdida, etc.)
-        // amerita reintentar solo, conservando las credenciales.
         const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output
           ?.statusCode;
         const loggedOut = statusCode === DisconnectReason.loggedOut;
 
         if (loggedOut) {
-          // Las credenciales en disco quedaron invalidadas del lado de WhatsApp: si no las
-          // borramos acá, el próximo connect() de este usuario intenta reusarlas y falla.
-          await clearSession(userId);
+          console.warn(`🔒 [WhatsApp] Sesión cerrada desde el teléfono para usuario ${userId}`);
+          sessions.delete(userId);
+          await clearCreds();
         } else {
           sessions.delete(userId);
         }
@@ -106,16 +84,17 @@ export class WhatsappService {
         emitStatus(userId, 'disconnected');
 
         if (!loggedOut) {
-          WhatsappService.connect(userId).catch((err) => {
-            console.error(`❌ [WhatsApp] Error reconectando la sesión del usuario ${userId}:`, err);
-          });
+          console.log(`🔄 [WhatsApp] Reconectando sesión de usuario ${userId} en 3 segundos...`);
+          setTimeout(() => {
+            WhatsappService.connect(userId).catch((err) => {
+              console.error(`❌ [WhatsApp] Error reconectando sesión de usuario ${userId}:`, err);
+            });
+          }, 3000);
         }
       }
     });
 
     socket.ev.on('messages.upsert', async ({ messages, type }) => {
-      // "notify" = mensajes nuevos en vivo. Otros tipos (ej. "append") son resincronización de
-      // historial al reconectar, no queremos que el bot responda mensajes viejos.
       if (type !== 'notify') return;
 
       for (const msg of messages) {
@@ -138,16 +117,12 @@ export class WhatsappService {
     const isGroup = remoteJid.endsWith('@g.us');
     const user = await AuthService.getUserById(userId);
 
-    // Switch "Responder también en grupos" (PUT /api/whatsapp/bot-groups-enabled): por default
-    // el bot solo atiende chats individuales, ignorando por completo los mensajes de grupo.
+    // Switch "Responder también en grupos": por default solo atiende chats individuales
     if (isGroup && !user?.botGroupsEnabled && !fromMe) return;
 
     const text: string | undefined = msg.message?.conversation || msg.message?.extendedTextMessage?.text;
-    if (!text) return; // ignorar mensajes sin texto (imágenes, audios, etc.) por ahora
+    if (!text) return;
 
-    // En un grupo, remoteJid es el grupo entero — quien realmente escribió está en
-    // key.participant. Sin eso no hay a quién atribuirle el mensaje (pasa con algunos mensajes
-    // de sistema del grupo), así que se ignora si no es un mensaje propio.
     const participantJid: string | undefined = isGroup ? msg.key?.participant : undefined;
     if (isGroup && !participantJid && !fromMe) return;
 
@@ -173,7 +148,7 @@ export class WhatsappService {
 
     const conversation = await ConversationService.findOrCreateByPhone(phone, contactName, userId, groupName);
 
-    // Si el mensaje lo envió el agente humano o nosotros desde el teléfono/WhatsApp Web, lo guardamos como 'agent' y salimos
+    // Si el mensaje lo envió el asesor humano o desde el teléfono/WhatsApp Web, lo guardamos como 'agent' y salimos
     if (fromMe) {
       const outbound = await ConversationService.addMessage(conversation.id, 'agent', text);
       if (outbound) {
@@ -183,11 +158,6 @@ export class WhatsappService {
       return;
     }
 
-    // Se pide ANTES de loguear el mensaje entrante actual: son los turnos previos de la
-    // conversación, sin incluir todavía este mensaje (que se lo pasamos aparte a
-    // processIncomingMessage como incomingText). Se filtra contra las bases ACTIVAS ahora mismo,
-    // así una respuesta vieja generada con una base que ya se desactivó deja de "pesar" en la
-    // charla — ver ConversationService.toAiHistory().
     const priorMessages = await ConversationService.getMessages(conversation.id);
     const activeBaseIds = await KnowledgeBaseService.getActiveBaseIds();
     const history = ConversationService.toAiHistory(priorMessages ?? [], activeBaseIds);
@@ -198,7 +168,7 @@ export class WhatsappService {
       io.emit('conversation_updated', inbound.conversation);
     }
 
-    // Cancelar mensajes programados que tengan activa la regla de "Detener si el contacto responde"
+    // Cancelar mensajes programados si el contacto respondió
     try {
       const { ScheduledJobService } = await import('./scheduledJob.service.js');
       await ScheduledJobService.cancelPendingOnContactReply(phone);
@@ -206,8 +176,6 @@ export class WhatsappService {
       console.warn('[WhatsApp] Error cancelando programados al recibir respuesta:', err);
     }
 
-    // Switch "Habilitar bot" del panel (PUT /api/whatsapp/bot-enabled): el mensaje del cliente
-    // queda igual registrado en la conversación arriba, pero si está apagado no autorespondemos.
     if (!user?.botEnabled) return;
 
     const botResult = await BotEngineService.processIncomingMessage(
@@ -218,15 +186,12 @@ export class WhatsappService {
       user.aiFallbackEnabled,
       user.aiCustomInstructions
     );
-    if (!botResult) return; // "Responder con IA" apagado y ninguna regla matcheó: sin respuesta automática.
+    if (!botResult) return;
 
-    // En grupos se responde siempre al grupo (WhatsApp no tiene "responder en privado" desde
-    // ahí), pero se menciona a quien escribió para que quede claro a quién le está contestando
-    // el bot en medio de la charla de todos.
     if (isGroup && participantJid) {
       await socket.sendMessage(remoteJid, {
         text: `@${participantJid.split('@')[0]} ${botResult.replyText}`,
-        mentions: [participantJid],
+        mentions: [participantJid]
       });
     } else {
       await socket.sendMessage(remoteJid, { text: botResult.replyText });
@@ -249,13 +214,17 @@ export class WhatsappService {
       }
     }
 
-    await clearSession(userId);
+    sessions.delete(userId);
+    try {
+      const { clearCreds } = await usePostgresAuthState(userId);
+      await clearCreds();
+    } catch (err) {
+      console.error(`⚠️ [WhatsApp] Error borrando credenciales en PostgreSQL:`, err);
+    }
+
     emitStatus(userId, 'disconnected');
   }
 
-  /**
-   * Envía un mensaje de texto saliente por WhatsApp usando la sesión activa del usuario (o la primera conectada).
-   */
   static async sendTextMessage(phone: string, text: string, userId?: number): Promise<boolean> {
     let targetSession: WhatsappSession | undefined;
     if (userId) {
@@ -277,5 +246,26 @@ export class WhatsappService {
     const jid = `${cleanPhone}@s.whatsapp.net`;
     await targetSession.socket.sendMessage(jid, { text });
     return true;
+  }
+
+  /**
+   * Reconecta automáticamente al iniciar el servidor todas las sesiones activas guardadas en PostgreSQL.
+   */
+  static async reconnectAllActiveSessions(): Promise<void> {
+    try {
+      const { rows } = await db.query(
+        "SELECT DISTINCT user_id FROM whatsapp_sessions WHERE key_id = 'creds'"
+      );
+      if (rows.length > 0) {
+        console.log(`🔌 [WhatsApp] Reconectando ${rows.length} sesión(es) persistidas en PostgreSQL...`);
+        for (const row of rows) {
+          WhatsappService.connect(row.user_id).catch((err) => {
+            console.warn(`⚠️ [WhatsApp] Falló auto-reconexión para usuario ${row.user_id}:`, err);
+          });
+        }
+      }
+    } catch (err) {
+      console.error('❌ [WhatsApp] Error al auto-reconectar sesiones desde PostgreSQL:', err);
+    }
   }
 }

@@ -12,6 +12,7 @@ import { initDatabase } from './config/db.js';
 import { ConversationService } from './services/conversation.service.js';
 import { KeywordRuleService } from './services/keywordRule.service.js';
 import { SchedulerWorker } from './services/scheduler.worker.js';
+import { WhatsappService } from './services/whatsapp.service.js';
 
 dotenv.config();
 
@@ -59,6 +60,8 @@ async function start() {
     await Promise.all([ConversationService.seedIfEmpty(), KeywordRuleService.seedIfEmpty()]);
     // Iniciar worker de mensajes programados
     SchedulerWorker.start(30000);
+    // Reconectar automáticamente sesiones activas de WhatsApp guardadas en PostgreSQL
+    WhatsappService.reconnectAllActiveSessions();
   } catch (err) {
     console.error('⚠️  No se pudo conectar/inicializar PostgreSQL. El servidor sigue arrancando,');
     console.error('    pero los endpoints de conversaciones y reglas de bot van a fallar hasta que');

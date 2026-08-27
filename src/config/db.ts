@@ -165,6 +165,17 @@ const SCHEMA_SQL = `
   -- futuras con el mismo contacto, sin necesidad de borrar el historial — ver
   -- ConversationService.toAiHistory().
   ALTER TABLE messages ADD COLUMN IF NOT EXISTS source_kb_ids INTEGER[] NOT NULL DEFAULT '{}';
+
+  -- Persistencia de Sesión de Baileys en PostgreSQL (inmune a reinicios/despliegues de Railway)
+  CREATE TABLE IF NOT EXISTS whatsapp_sessions (
+    user_id INT NOT NULL,
+    key_id VARCHAR(255) NOT NULL,
+    data TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY(user_id, key_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_user_id ON whatsapp_sessions(user_id);
 `;
 
 /**
