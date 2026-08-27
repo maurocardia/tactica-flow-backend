@@ -300,4 +300,79 @@ export class ConversationService {
       client.release();
     }
   }
+
+  /**
+   * Sincroniza los mensajes reales de un chat con PostgreSQL (reemplazo o adición).
+   * Permite actualizar la DB con el estado actual de WhatsApp Web o vaciar mensajes eliminados.
+   */
+  static async syncMessages(params: {
+    phone: string;
+    name: string;
+    userId: number;
+    groupName?: string | null;
+    messages: { sender: MessageSender; text: string; createdAt?: string }[];
+    mode?: 'replace' | 'merge';
+  }): Promise<Conversation> {
+    const conversation = await this.findOrCreateByPhone(
+      params.phone,
+      params.name,
+      params.userId,
+      params.groupName || null
+    );
+
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+
+      if (params.mode === 'replace') {
+        // Borrar mensajes existentes para reflejar con exactitud el estado actual
+        await client.query('DELETE FROM messages WHERE conversation_id = $1', [conversation.id]);
+      }
+
+      for (const m of params.messages) {
+        if (!m.text || !m.text.trim()) continue;
+        const msgDate = m.createdAt ? new Date(m.createdAt) : new Date();
+        await client.query(
+          `INSERT INTO messages (conversation_id, sender, text, created_at) VALUES ($1, $2, $3, $4)`,
+          [conversation.id, m.sender, m.text.trim(), msgDate]
+        );
+      }
+
+      const last = params.messages[params.messages.length - 1];
+      const lastText = last ? last.text : '';
+      const lastDate = last && last.createdAt ? new Date(last.createdAt) : new Date();
+
+      const { rows } = await client.query(
+        `UPDATE conversations SET last_msg = $1, last_message_at = $2, unread = 0 WHERE id = $3 RETURNING *`,
+        [lastText, lastDate, conversation.id]
+      );
+
+      await client.query('COMMIT');
+      return mapConversationRow(rows[0]);
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Vacía todo el historial de mensajes de una conversación en PostgreSQL (útil si se borró el chat).
+   */
+  static async clearMessages(conversationId: number): Promise<boolean> {
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM messages WHERE conversation_id = $1', [conversationId]);
+      await client.query('UPDATE conversations SET last_msg = $1, unread = 0 WHERE id = $2', ['', conversationId]);
+      await client.query('COMMIT');
+      return true;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
 }

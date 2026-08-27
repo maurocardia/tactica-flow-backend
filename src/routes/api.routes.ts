@@ -215,6 +215,42 @@ router.post('/conversations/:id/messages', async (req: Request, res: Response) =
   }
 });
 
+// Sincroniza los mensajes del chat con PostgreSQL (reemplazo o adición)
+router.post('/conversations/sync', async (req: Request, res: Response) => {
+  try {
+    const { phone, name, userId = 1, groupName, messages = [], mode = 'replace' } = req.body;
+
+    if (!phone || !name) {
+      return res.status(400).json({ error: 'phone y name son obligatorios' });
+    }
+
+    const conversation = await ConversationService.syncMessages({
+      phone,
+      name,
+      userId: Number(userId),
+      groupName: groupName || null,
+      messages,
+      mode
+    });
+
+    res.json({ status: 'ok', conversation, syncedCount: messages.length });
+  } catch (error: any) {
+    console.error('❌ Error en /conversations/sync:', error);
+    res.status(500).json({ error: error.message || 'Error al sincronizar conversación' });
+  }
+});
+
+// Vacía los mensajes de una conversación en PostgreSQL (si el usuario borró el chat)
+router.delete('/conversations/:id/messages', async (req: Request, res: Response) => {
+  try {
+    const conversationId = Number(req.params.id);
+    await ConversationService.clearMessages(conversationId);
+    res.json({ status: 'ok', message: 'Mensajes eliminados correctamente' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al vaciar mensajes' });
+  }
+});
+
 // Keyword Rule Management Endpoints
 router.get('/bot/rules', async (req: Request, res: Response) => {
   try {
