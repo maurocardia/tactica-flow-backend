@@ -264,14 +264,21 @@ export class KnowledgeBaseService {
       'sin', 'sobre', 'que', 'como', 'cuando', 'donde', 'quien', 'cual', 'cuanto', 'este', 'esta', 'estos', 'estas',
       'hola', 'buenas', 'dias', 'tardes', 'noches', 'favor', 'gracias', 'porfa', 'podrias', 'puedes', 'tienen',
       'hay', 'ser', 'estar', 'hacer', 'mi', 'tu', 'su', 'nos', 'me', 'te', 'se', 'le', 'les', 'lo', 'y', 'o', 'pero',
-      'venden', 'vende', 'vender', 'tienes', 'tiene', 'consigo', 'conseguir', 'ustedes', 'nosotros', 'quiero', 'quiere'
+      'venden', 'vende', 'vender', 'tienes', 'tiene', 'consigo', 'conseguir', 'ustedes', 'nosotros', 'quiero', 'quiere',
+      // Palabras conversacionales, interjecciones y términos web/sociales
+      'jaja', 'jajaja', 'jajajaja', 'jeje', 'mami', 'papi', 'hijo', 'hija', 'amigo', 'chau', 'bien', 'bueno', 'malo',
+      'susto', 'video', 'link', 'http', 'https', 'www', 'com', 'facebook', 'instagram', 'tiktok', 'reel', 'share',
+      'reproducciones', 'likes', 'esperando', 'esperar', 'abajo', 'arriba', 'ahi', 'aqui', 'alla', 'ya', 'muy', 'mas',
+      'menos', 'algo', 'nada', 'todo', 'tambien', 'tampoco', 'si', 'no', 'casi', 'aviso', 'avisame', 'minutos'
     ]);
 
-    const queryKeywords = query
+    // Limpiar URLs y caracteres extraños de la consulta antes de extraer palabras clave
+    const cleanQuery = query.replace(/https?:\/\/\S+/gi, ' ');
+    const queryKeywords = cleanQuery
       .toLowerCase()
       .replace(/[^\w\sáéíóúüñ]/gi, ' ')
       .split(/\s+/)
-      .filter((w) => w.length > 2 && !STOPWORDS.has(w));
+      .filter((w) => w.length >= 3 && !STOPWORDS.has(w));
 
     interface Chunk {
       baseTitle: string;
@@ -303,9 +310,14 @@ export class KnowledgeBaseService {
         let score = 0;
 
         for (const kw of queryKeywords) {
-          const matches = (chunkLower.match(new RegExp(`\\b${kw}`, 'g')) || []).length;
-          score += matches * 10;
-          if (matches === 0 && chunkLower.includes(kw)) score += 3;
+          // Coincidencia de palabra completa o prefijo claro con límite de palabra
+          const exactMatches = (chunkLower.match(new RegExp(`\\b${kw}\\b`, 'g')) || []).length;
+          if (exactMatches > 0) {
+            score += exactMatches * 15;
+          } else if (kw.length >= 5) {
+            const prefixMatches = (chunkLower.match(new RegExp(`\\b${kw.slice(0, 5)}`, 'g')) || []).length;
+            score += prefixMatches * 5;
+          }
         }
 
         chunks.push({ baseTitle: row.base_title, filename: row.filename, text: chunkText, score });
@@ -314,9 +326,9 @@ export class KnowledgeBaseService {
 
     chunks.sort((a, b) => b.score - a.score);
 
-    // isRelevant = true SOLO si hay al menos un fragmento con score real > 0
+    // isRelevant = true SOLO si hay coincidencias reales y significativas (umbral >= 15)
     const maxScore = chunks.length > 0 ? chunks[0].score : 0;
-    const isRelevant = maxScore > 0;
+    const isRelevant = maxScore >= 15;
 
     // Para KBs pequeñas: enviamos todo el contenido (sin chunking) para no perder contexto,
     // pero igualmente usamos el isRelevant calculado arriba

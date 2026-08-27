@@ -82,7 +82,9 @@ router.post('/ai/draft', async (req: Request, res: Response) => {
     }
 
     // 1. Consultar prioritariamente la Base de Conocimiento activa
-    const searchTarget = `${conversationText.slice(-800)} ${instruction || ''} ${userPrompt || ''}`.trim();
+    // Priorizamos las instrucciones o prompt del asesor y limpiamos URLs del historial
+    const cleanConversation = conversationText.replace(/https?:\/\/\S+/gi, ' ').slice(-400);
+    const searchTarget = `${instruction || ''} ${userPrompt || ''} ${cleanConversation}`.trim();
     let knowledgeContext = '';
     let foundInKb = false;
     let baseIds: number[] = [];
@@ -90,7 +92,7 @@ router.post('/ai/draft', async (req: Request, res: Response) => {
     try {
       const active = await KnowledgeBaseService.getActiveContext(searchTarget);
       if (active.context && active.isRelevant) {
-        // isRelevant=true significa que el RAG encontró fragmentos con score real > 0 para la consulta
+        // isRelevant=true significa que el RAG encontró coincidencias reales con términos de la KB
         knowledgeContext = active.context;
         foundInKb = true;
         baseIds = active.baseIds;
