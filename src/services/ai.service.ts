@@ -79,7 +79,11 @@ async function generateTextWithRetry(
   params: Parameters<typeof generateText>[0],
   maxRetries = 3
 ): Promise<Awaited<ReturnType<typeof generateText>>> {
-  const fallbackModels = ['gemini-2.0-flash', 'gemini-1.5-flash'];
+  // gemini-2.0-flash y gemini-1.5-flash fueron discontinuados por Google (confirmado con una
+  // llamada real: "This model ... is no longer available"). gemini-3.1-flash-lite es el modelo
+  // más liviano que sigue funcionando hoy — buen candidato para cuando se agota la cuota del
+  // modelo principal.
+  const fallbackModels = ['gemini-3.1-flash-lite'];
   let currentParams = { ...params };
 
   for (let attempt = 0; ; attempt++) {
