@@ -132,37 +132,32 @@ export class WhatsappService {
 
   private static async handleIncomingMessage(userId: number, socket: WASocket, msg: any): Promise<void> {
     const remoteJid: string | undefined = msg.key?.remoteJid;
-    if (!remoteJid || msg.key?.fromMe) return;
+    if (!remoteJid) return;
+    const fromMe = !!msg.key?.fromMe;
 
     const isGroup = remoteJid.endsWith('@g.us');
     const user = await AuthService.getUserById(userId);
 
     // Switch "Responder también en grupos" (PUT /api/whatsapp/bot-groups-enabled): por default
     // el bot solo atiende chats individuales, ignorando por completo los mensajes de grupo.
-    if (isGroup && !user?.botGroupsEnabled) return;
+    if (isGroup && !user?.botGroupsEnabled && !fromMe) return;
 
     const text: string | undefined = msg.message?.conversation || msg.message?.extendedTextMessage?.text;
     if (!text) return; // ignorar mensajes sin texto (imágenes, audios, etc.) por ahora
 
     // En un grupo, remoteJid es el grupo entero — quien realmente escribió está en
     // key.participant. Sin eso no hay a quién atribuirle el mensaje (pasa con algunos mensajes
-    // de sistema del grupo), así que se ignora.
+    // de sistema del grupo), así que se ignora si no es un mensaje propio.
     const participantJid: string | undefined = isGroup ? msg.key?.participant : undefined;
-    if (isGroup && !participantJid) return;
+    if (isGroup && !participantJid && !fromMe) return;
 
     let contactName: string = msg.pushName || remoteJid.split('@')[0];
     let phone: string;
     let groupName: string | null = null;
 
-    if (isGroup && participantJid) {
-      // Una conversación (con su propio historial) POR CADA PARTICIPANTE del grupo, no una sola
-      // para todo el grupo — así el bot distingue de qué venía hablando cada persona en vez de
-      // mezclar el contexto de todos los que escriben ahí. "phone" queda como
-      // "<grupo>-<participante>" para que sea única por combinación. groupName queda guardado
-      // en la conversación (ver ConversationService.listByGroupName) para que el panel pueda
-      // encontrar a todos los participantes de este mismo grupo real, sin adivinar nada leyendo
-      // la pantalla — ver AiSummaryModal.
-      phone = `${remoteJid.split('@')[0]}-${participantJid.split('@')[0]}`;
+    if (isGroup) {
+      const part = participantJid ? participantJid.split('@')[0] : (fromMe ? 'agente' : 'participante');
+      phone = `${remoteJid.split('@')[0]}-${part}`;
       try {
         const metadata = await socket.groupMetadata(remoteJid);
         if (metadata.subject) {
@@ -177,6 +172,16 @@ export class WhatsappService {
     }
 
     const conversation = await ConversationService.findOrCreateByPhone(phone, contactName, userId, groupName);
+
+    // Si el mensaje lo envió el agente humano o nosotros desde el teléfono/WhatsApp Web, lo guardamos como 'agent' y salimos
+    if (fromMe) {
+      const outbound = await ConversationService.addMessage(conversation.id, 'agent', text);
+      if (outbound) {
+        io.to(`chat_${conversation.id}`).emit('new_message', outbound.message);
+        io.emit('conversation_updated', outbound.conversation);
+      }
+      return;
+    }
 
     // Se pide ANTES de loguear el mensaje entrante actual: son los turnos previos de la
     // conversación, sin incluir todavía este mensaje (que se lo pasamos aparte a
