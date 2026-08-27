@@ -29,7 +29,7 @@ export class BotEngineService {
           let knowledgeContext = '';
           let sourceKbIds: number[] = [];
           try {
-            const active = await KnowledgeBaseService.getActiveContext();
+            const active = await KnowledgeBaseService.getActiveContext(incomingText);
             knowledgeContext = active.context;
             sourceKbIds = active.baseIds;
           } catch (err) {
@@ -78,7 +78,7 @@ export class BotEngineService {
     let knowledgeContext = '';
     let sourceKbIds: number[] = [];
     try {
-      const active = await KnowledgeBaseService.getActiveContext();
+      const active = await KnowledgeBaseService.getActiveContext(incomingText);
       knowledgeContext = active.context;
       sourceKbIds = active.baseIds;
     } catch (err) {

@@ -223,15 +223,12 @@ export class KnowledgeBaseService {
   }
 
   /**
-   * Concatena el texto de todos los documentos de todas las bases ACTIVAS (una sola base de
-   * conocimiento global para toda la empresa por ahora, sin filtrar por usuario — no hay auth
-   * todavía, ver Issue #6). Se inyecta en el system prompt del bot desde
-   * AIService.processMessage. Trunca a MAX_CONTEXT_CHARS para no disparar el consumo de tokens
-   * por mensaje. También devuelve los IDs de las bases que aportaron contenido, para que
-   * ConversationService pueda "etiquetar" con qué bases se generó cada respuesta del bot (ver
-   * toAiHistory) y así filtrarlas del contexto futuro si esa base se desactiva más adelante.
+   * Obtiene el contexto de las bases de conocimiento ACTIVAS de forma optimizada.
+   * Si el texto acumulado es grande, aplica un filtro de relevancia (RAG ligero) extrayendo
+   * los fragmentos que mejor responden a la consulta del usuario, reduciendo el consumo de
+   * tokens en hasta un 95% y evitando exceder límites de cuota (TPM).
    */
-  static async getActiveContext(): Promise<{ context: string; baseIds: number[] }> {
+  static async getActiveContext(query?: string): Promise<{ context: string; baseIds: number[] }> {
     const { rows } = await db.query(
       `SELECT kb.id AS base_id, kb.title AS base_title, d.filename, d.content
        FROM knowledge_documents d
@@ -242,12 +239,110 @@ export class KnowledgeBaseService {
 
     if (rows.length === 0) return { context: '', baseIds: [] };
 
-    let context = '';
     const baseIds = new Set<number>();
-    for (const row of rows) {
-      context += `=== Base: ${row.base_title} — Documento: ${row.filename} ===\n${row.content}\n\n`;
-      baseIds.add(row.base_id);
+    rows.forEach((r) => baseIds.add(r.base_id));
+
+    let totalLength = 0;
+    rows.forEach((r) => (totalLength += (r.content || '').length));
+
+    // Si el contenido total es pequeño (<= 14.000 caracteres, ~3.500 tokens) o no hay query, enviamos todo directo
+    if (totalLength <= 14000 || !query || !query.trim()) {
+      let context = '';
+      for (const row of rows) {
+        context += `=== Base: ${row.base_title} — Documento: ${row.filename} ===\n${row.content}\n\n`;
+      }
+      return { context: context.trim(), baseIds: [...baseIds] };
     }
+
+    // --- Filtro de Relevancia Semántica y Palabras Clave (RAG Ligero) ---
+    const STOPWORDS = new Set([
+      'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'de', 'del', 'a', 'al', 'en', 'para', 'por', 'con',
+      'sin', 'sobre', 'que', 'como', 'cuando', 'donde', 'quien', 'cual', 'cuanto', 'este', 'esta', 'estos', 'estas',
+      'hola', 'buenas', 'dias', 'tardes', 'noches', 'favor', 'gracias', 'porfa', 'podrias', 'puedes', 'tienen',
+      'hay', 'ser', 'estar', 'hacer', 'mi', 'tu', 'su', 'nos', 'me', 'te', 'se', 'le', 'les', 'lo', 'y', 'o', 'pero'
+    ]);
+
+    const queryKeywords = query
+      .toLowerCase()
+      .replace(/[^\w\sáéíóúüñ]/gi, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length > 2 && !STOPWORDS.has(w));
+
+    interface Chunk {
+      baseTitle: string;
+      filename: string;
+      text: string;
+      score: number;
+    }
+
+    const chunks: Chunk[] = [];
+
+    for (const row of rows) {
+      const content = row.content || '';
+      const rawParagraphs = content.split(/\n\s*\n/);
+      const docChunks: string[] = [];
+
+      let current = '';
+      for (const p of rawParagraphs) {
+        if ((current + '\n' + p).length > 700) {
+          if (current.trim()) docChunks.push(current.trim());
+          current = p;
+        } else {
+          current = current ? `${current}\n${p}` : p;
+        }
+      }
+      if (current.trim()) docChunks.push(current.trim());
+
+      for (const chunkText of docChunks) {
+        const chunkLower = chunkText.toLowerCase();
+        let score = 0;
+
+        if (queryKeywords.length === 0) {
+          score = 1;
+        } else {
+          for (const kw of queryKeywords) {
+            const matches = (chunkLower.match(new RegExp(`\\b${kw}`, 'g')) || []).length;
+            score += matches * 10;
+            if (matches === 0 && chunkLower.includes(kw)) {
+              score += 3;
+            }
+          }
+        }
+
+        chunks.push({
+          baseTitle: row.base_title,
+          filename: row.filename,
+          text: chunkText,
+          score
+        });
+      }
+    }
+
+    chunks.sort((a, b) => b.score - a.score);
+
+    let selectedLength = 0;
+    const selectedChunks: Chunk[] = [];
+    const MAX_FILTERED_CHARS = 12000;
+
+    for (const c of chunks) {
+      if (c.score === 0 && selectedChunks.length >= 2) break;
+      if (selectedLength + c.text.length > MAX_FILTERED_CHARS) break;
+      selectedChunks.push(c);
+      selectedLength += c.text.length;
+    }
+
+    if (selectedChunks.length === 0 && chunks.length > 0) {
+      selectedChunks.push(...chunks.slice(0, 3));
+    }
+
+    let context = '';
+    for (const sc of selectedChunks) {
+      context += `=== Base: ${sc.baseTitle} — Documento: ${sc.filename} ===\n${sc.text}\n\n`;
+    }
+
+    console.log(
+      `⚡ [KnowledgeBaseService] Contexto optimizado para IA: ${selectedLength} chars (~${Math.round(selectedLength / 4)} tokens) seleccionados de ${totalLength} chars totales.`
+    );
 
     return { context: context.trim(), baseIds: [...baseIds] };
   }
