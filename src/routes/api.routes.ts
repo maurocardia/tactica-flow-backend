@@ -164,7 +164,8 @@ router.post('/ai/transcribe', async (req: Request, res: Response) => {
 // Conversation Management Endpoints
 router.get('/conversations', async (req: Request, res: Response) => {
   try {
-    res.json(await ConversationService.listConversations());
+    const userId = req.query.userId ? Number(req.query.userId) : undefined;
+    res.json(await ConversationService.listConversations(userId));
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al obtener conversaciones' });
   }

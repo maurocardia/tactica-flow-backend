@@ -158,6 +158,19 @@ const SCHEMA_SQL = `
   -- el bot también entre a responder en los grupos de WhatsApp del usuario.
   ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_groups_enabled BOOLEAN NOT NULL DEFAULT false;
 
+  -- Switch "Activar el bot para contactos nuevos": por default un contacto que escribe por
+  -- primera vez queda registrado en bot_contacts con el switch APAGADO (hay que prenderlo a mano
+  -- desde el panel) — ver BotContactService.upsert/WhatsappService.handleIncomingMessage.
+  -- Activando esto, esos contactos nuevos arrancan con el bot ya PRENDIDO, para no tener que ir a
+  -- habilitarlos uno por uno cuando escribe gente que todavía no estaba en la lista.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_enabled_for_new_contacts BOOLEAN NOT NULL DEFAULT false;
+
+  -- "Responder a todos" vs "Responder a contactos seleccionados": con esto en true, el bot le
+  -- responde a CUALQUIER contacto sin importar su switch en bot_contacts (se salta ese chequeo
+  -- por completo) — ver WhatsappService.handleIncomingMessage. Default false para no cambiarle el
+  -- comportamiento a nadie: sigue respetando el switch por contacto como hasta ahora.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_reply_to_all BOOLEAN NOT NULL DEFAULT false;
+
   -- Qué bases de conocimiento estaban activas cuando se generó cada respuesta del bot (vacío
   -- para mensajes del cliente, respuestas por regla fija, o respuestas de IA sin ninguna base
   -- activa en ese momento). Sirve para filtrar el historial que se le manda a la IA como
@@ -176,6 +189,36 @@ const SCHEMA_SQL = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_user_id ON whatsapp_sessions(user_id);
+
+  -- Switch de bot POR CONTACTO — versión vieja (2026-08-28), reemplazada por la tabla
+  -- "bot_contacts" de abajo. Se deja la columna sin usar (no se borra ni se migra) para no tocar
+  -- filas existentes de "conversations"; el panel y el gating del bot ya no la consultan.
+  ALTER TABLE conversations ADD COLUMN IF NOT EXISTS bot_enabled BOOLEAN NOT NULL DEFAULT false;
+
+  -- Lista PROPIA de "contactos administrables" para el switch de bot por contacto (panel: "Bot
+  -- habilitado por contacto") — separada a propósito de "conversations"/"messages". Motivo: la
+  -- tabla conversations mezclaba historial real de charla con la identidad del contacto, y un
+  -- solo participante real terminaba repartido en varias filas (WhatsApp le va rotando un
+  -- identificador @lid temporal — ver comentario de participantPn/senderPn en
+  -- whatsapp.service.ts). Esta tabla es un espejo liviano, de solo lectura desde el punto de
+  -- vista de WhatsApp: se actualiza (upsert) con el nombre/actividad real cada vez que llega un
+  -- mensaje o Baileys sincroniza un contacto, pero nunca borra ni modifica mensajes. Un grupo de
+  -- WhatsApp es UNA sola fila acá (jid = el JID del grupo, is_group = true), no una por
+  -- participante — la lógica de contexto por participante para la IA sigue viviendo en
+  -- "conversations", sin cambios.
+  CREATE TABLE IF NOT EXISTS bot_contacts (
+    id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    jid TEXT NOT NULL,
+    name TEXT NOT NULL,
+    is_group BOOLEAN NOT NULL DEFAULT false,
+    bot_enabled BOOLEAN NOT NULL DEFAULT false,
+    last_activity TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (user_id, jid)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_bot_contacts_user_id ON bot_contacts(user_id, last_activity DESC);
 `;
 
 /**

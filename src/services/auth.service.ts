@@ -22,7 +22,8 @@ export interface User {
   botEnabled: boolean;
   aiFallbackEnabled: boolean;
   aiCustomInstructions: string;
-  botGroupsEnabled: boolean;
+  botEnabledForNewContacts: boolean;
+  botReplyToAll: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -41,7 +42,8 @@ function mapUserRow(row: any): User {
     botEnabled: row.bot_enabled,
     aiFallbackEnabled: row.ai_fallback_enabled,
     aiCustomInstructions: row.ai_custom_instructions,
-    botGroupsEnabled: row.bot_groups_enabled,
+    botEnabledForNewContacts: row.bot_enabled_for_new_contacts,
+    botReplyToAll: row.bot_reply_to_all,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -124,10 +126,19 @@ export class AuthService {
     return mapUserRow(rows[0]);
   }
 
-  static async setBotGroupsEnabled(id: number, botGroupsEnabled: boolean): Promise<User | null> {
+  static async setBotEnabledForNewContacts(id: number, enabled: boolean): Promise<User | null> {
     const { rows } = await db.query(
-      `UPDATE users SET bot_groups_enabled = $1, updated_at = now() WHERE id = $2 RETURNING *`,
-      [botGroupsEnabled, id]
+      `UPDATE users SET bot_enabled_for_new_contacts = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [enabled, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setBotReplyToAll(id: number, enabled: boolean): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET bot_reply_to_all = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [enabled, id]
     );
     if (rows.length === 0) return null;
     return mapUserRow(rows[0]);
