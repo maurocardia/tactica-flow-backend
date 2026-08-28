@@ -65,6 +65,18 @@ Para evitar saturar los límites de cuota (TPM - Tokens por Minuto) de Google AI
 ### 3. Auto-Fallback Inteligente Multimodelo
 *   Si un modelo llega a su límite de cuota temporal (`429 Quota Exceeded / ResourceExhausted`), el backend cambia en **600ms** automáticamente al siguiente modelo disponible (`gemini-2.0-flash` o `gemini-1.5-flash`) sin interrumpir la atención del cliente.
 
+### 4. 🔮 Pendiente / idea a futuro: búsqueda semántica en vez de solo por palabra clave
+*   **Estado:** No implementado — anotado acá el `2026-08-28` para retomarlo más adelante, no es urgente.
+*   **Problema detectado:** `getActiveContext` rankea fragmentos por coincidencia literal de palabras (con ajuste de rareza/IDF y un presupuesto de caracteres generoso agregado el mismo día). Esto funciona bien la mayoría de las veces, pero tiene un techo real: cuando el manual describe algo como una enumeración secuencial (ej. "las 4 solapas de una ventana: Principal, Enlace, Contactos, Plantilla-Reportes"), los últimos ítems de la lista usan palabras muy genéricas (aparecen en decenas de secciones no relacionadas de este manual de 760K caracteres) y terminan puntuando muy bajo — en un caso real, el fragmento correcto quedó en el puesto #268 de 470 fragmentos totales, muy por debajo de lo que cualquier presupuesto de caracteres razonable puede cubrir sin mandarle medio manual a la IA en cada pregunta.
+*   **Por qué no alcanza con subir más el presupuesto de contexto:** ya se subió de 16.000 → 40.000 → 80.000 → 120.000 caracteres durante los ajustes de RAG de esta fecha, resolviendo varios casos reales, pero el problema de fondo (matching literal, no por significado) sigue ahí para los casos más extremos.
+*   **Solución propuesta:** búsqueda semántica con embeddings.
+    1. Generar un embedding (vector) por cada fragmento de cada documento usando la API de embeddings de Gemini (mismo proveedor que ya se usa, sin agregar dependencias nuevas).
+    2. Guardar esos vectores en Postgres (columna o tabla nueva) — con solo ~470 fragmentos en la KB actual, ni siquiera hace falta una base de datos vectorial dedicada (pgvector, Pinecone, etc.): un cálculo de similitud coseno directo en el backend es más que suficiente en tiempo y costo.
+    3. En cada pregunta, generar el embedding de la consulta y rankear los fragmentos por similitud de significado, idealmente combinado con el ranking por palabra clave actual (híbrido), no como reemplazo total — el matching literal sigue siendo útil para términos técnicos exactos (nombres de módulos, códigos, etc.).
+    4. Regenerar embeddings cuando se sube/edita/borra un documento de la base de conocimiento (paso único por documento, no por pregunta).
+*   **Estimado de esfuerzo:** del orden de una sesión larga de trabajo (algunas horas), no un proyecto grande — la escala de datos es chica y ya se conoce bien el código de `knowledgeBase.service.ts`.
+*   **Trade-off principal:** cada documento nuevo necesita ese paso extra de generar embeddings antes de estar disponible para el bot (costo/latencia única por documento, no por consulta).
+
 ---
 
 ## 3. 📊 Resúmenes de Conversación con Rangos de Fechas Reales (Baileys)

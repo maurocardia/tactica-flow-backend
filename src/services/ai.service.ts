@@ -46,21 +46,42 @@ const google = createGoogleGenerativeAI({
 });
 
 // --- Cola + reintentos para llamadas a Gemini ------------------------------------------------
-let geminiQueue: Promise<unknown> = Promise.resolve();
+// Antes esto era una cola 100% en serie (una sola llamada a la vez): si a un mensaje le tocaba
+// reintentar (ej. Gemini con "high demand"), TODOS los mensajes siguientes en la fila quedaban
+// bloqueados esperando a que ese termine sus reintentos completos, aunque fueran de otra
+// conversación sin relación. Con un pool de hasta 2 llamadas en simultáneo, un mensaje trabado
+// reintentando ya no frena por completo al resto — sigue habiendo un límite (no dejamos que
+// explote la concurrencia sin control, que fue la causa del bug original de mensajes
+// simultáneos) pero la cola deja de ser el cuello de botella principal.
+const MAX_CONCURRENT_GEMINI_CALLS = 2;
+let activeGeminiCalls = 0;
+const geminiWaitQueue: Array<() => void> = [];
+
+async function acquireGeminiSlot(): Promise<void> {
+  if (activeGeminiCalls < MAX_CONCURRENT_GEMINI_CALLS) {
+    activeGeminiCalls++;
+    return;
+  }
+  await new Promise<void>((resolve) => geminiWaitQueue.push(resolve));
+  activeGeminiCalls++;
+}
+
+function releaseGeminiSlot(): void {
+  activeGeminiCalls--;
+  const next = geminiWaitQueue.shift();
+  if (next) next();
+}
 
 const MIN_GAP_MS = 1200;
 let lastCallStartedAt = 0;
 
-function enqueueGeminiCall<T>(task: () => Promise<T>): Promise<T> {
-  const run = geminiQueue.then(
-    () => spacedTask(task),
-    () => spacedTask(task)
-  );
-  geminiQueue = run.then(
-    () => undefined,
-    () => undefined
-  );
-  return run;
+async function enqueueGeminiCall<T>(task: () => Promise<T>): Promise<T> {
+  await acquireGeminiSlot();
+  try {
+    return await spacedTask(task);
+  } finally {
+    releaseGeminiSlot();
+  }
 }
 
 async function spacedTask<T>(task: () => Promise<T>): Promise<T> {
@@ -134,11 +155,13 @@ REGLAS DE SEGURIDAD (prioridad absoluta):
 FORMATO Y ESTILO DE RESPUESTA:
 - Respondé de forma amable, clara y estructurada (usando listas o viñetas si hay pasos), pero siendo 100% fiel a los datos de la Base de Conocimiento.
 - No menciones frases como "según la base de conocimiento" a menos que no tengas la información.
-- Podés saludar cordialmente, pero todo contenido informativo debe provenir de forma estricta y exclusiva de la Base de Conocimiento.
+- Saludá (ej. "¡Hola!") SOLO si no hay mensajes previos en esta charla (es el primer mensaje del cliente). Si ya le respondiste antes en esta misma conversación, andá directo a la respuesta sin volver a saludar — repetir el saludo en cada mensaje suena robótico y molesta al cliente.
+- Todo contenido informativo debe provenir de forma estricta y exclusiva de la Base de Conocimiento.
 
-IMPORTANTE — EVALUACIÓN INDEPENDIENTE POR PREGUNTA:
-- Para cada nueva pregunta del cliente, consultá directamente la Base de Conocimiento actual.
-- No te condiciones por mensajes anteriores si en la Base de Conocimiento actual sí existe la información correcta.`;
+IMPORTANTE — CONTINUIDAD DE LA CONVERSACIÓN:
+- Si la pregunta del cliente es una continuación directa de algo que VOS MISMO ya respondiste en los últimos mensajes de esta charla (ej: "¿y el paso 2?", "explicame mejor eso", "qué dijiste sobre X"), respondé usando esa respuesta anterior tuya como base — no hace falta "encontrar" el tema de nuevo si ya lo tenías.
+- Si en cambio es un tema nuevo o distinto al de la respuesta anterior, priorizá lo que dice la sección "BASE DE CONOCIMIENTO" de este mensaje por sobre lo que hayas dicho antes (por si cambió).
+- Nunca inventes contenido nuevo que no esté ni en la Base de Conocimiento actual ni en tu propia respuesta anterior de esta charla.`;
 
 const UTILITY_SYSTEM_PROMPT = `Sos un asistente de redacción y análisis para el equipo comercial de Tacticasoft. Te piden tareas puntuales como resumir una conversación de WhatsApp, redactar una respuesta o extraer información de un texto — la tarea concreta viene en el mensaje del usuario.
 

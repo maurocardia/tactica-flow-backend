@@ -232,7 +232,11 @@ export class KnowledgeBaseService {
    * Si no hay coincidencias, la IA puede usar el contexto para responder (grounding)
    * pero NO se muestra el badge "respaldado por la Base de Conocimiento".
    */
-  static async getActiveContext(query?: string): Promise<{ context: string; baseIds: number[]; isRelevant: boolean }> {
+  static async getActiveContext(
+    currentText?: string,
+    historyText?: string
+  ): Promise<{ context: string; baseIds: number[]; isRelevant: boolean }> {
+    const query = `${historyText || ''} ${currentText || ''}`.trim();
     const { rows } = await db.query(
       `SELECT kb.id AS base_id, kb.title AS base_title, d.filename, d.content
        FROM knowledge_documents d
@@ -272,18 +276,33 @@ export class KnowledgeBaseService {
       'menos', 'algo', 'nada', 'todo', 'tambien', 'tampoco', 'si', 'no', 'casi', 'aviso', 'avisame', 'minutos'
     ]);
 
-    // Limpiar URLs y caracteres extraños de la consulta antes de extraer palabras clave
-    const cleanQuery = query.replace(/https?:\/\/\S+/gi, ' ');
-    const queryKeywords = cleanQuery
-      .toLowerCase()
-      .replace(/[^\w\sáéíóúüñ]/gi, ' ')
-      .split(/\s+/)
-      .filter((w) => w.length >= 3 && !STOPWORDS.has(w));
+    // Limpiar URLs y caracteres extraños antes de extraer palabras clave
+    const extractKeywords = (text: string): string[] =>
+      text
+        .replace(/https?:\/\/\S+/gi, ' ')
+        .toLowerCase()
+        .replace(/[^\w\sáéíóúüñ]/gi, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length >= 3 && !STOPWORDS.has(w));
+
+    // El mensaje ACTUAL pesa más que el historial: si el cliente cambia de tema de golpe,
+    // sus propias palabras clave dominan el puntaje y el chunk relevante al tema nuevo gana,
+    // en vez de que el historial viejo siga "empujando" hacia el tema anterior. Esto evita
+    // necesitar un clasificador explícito de "cambio de tema": el retrieval se auto-ajusta.
+    const currentKeywords = [...new Set(extractKeywords(currentText || ''))];
+    const currentKeywordSet = new Set(currentKeywords);
+    // Tope duro de 40 palabras: si el historial trae una respuesta larga del bot (ej. un
+    // procedimiento de varios pasos), no queremos que aporte decenas de palabras genéricas del
+    // manual que, sumadas, terminen pesando más que las 2-3 palabras específicas del mensaje
+    // nuevo. Con esto el historial sigue ayudando en preguntas de seguimiento cortas sin poder
+    // "tapar" un cambio de tema por pura acumulación de volumen.
+    const historyKeywords = [...new Set(extractKeywords(historyText || '').filter((w) => !currentKeywordSet.has(w)))].slice(0, 40);
 
     interface Chunk {
       baseTitle: string;
       filename: string;
       text: string;
+      textLower: string;
       score: number;
     }
 
@@ -294,9 +313,12 @@ export class KnowledgeBaseService {
       const rawParagraphs = content.split(/\n\s*\n/);
       const docChunks: string[] = [];
 
+      // 1200 en vez de 700: chunks más chicos partían procedimientos numerados a la mitad
+      // (ej. "1. ..." en un chunk y "2. ..." en el siguiente), así que si la pregunta matcheaba
+      // keywords del paso 1 pero el paso 2 quedaba en otro chunk, ese paso 2 se perdía.
       let current = '';
       for (const p of rawParagraphs) {
-        if ((current + '\n' + p).length > 700) {
+        if ((current + '\n' + p).length > 1200) {
           if (current.trim()) docChunks.push(current.trim());
           current = p;
         } else {
@@ -306,22 +328,59 @@ export class KnowledgeBaseService {
       if (current.trim()) docChunks.push(current.trim());
 
       for (const chunkText of docChunks) {
-        const chunkLower = chunkText.toLowerCase();
-        let score = 0;
-
-        for (const kw of queryKeywords) {
-          // Coincidencia de palabra completa o prefijo claro con límite de palabra
-          const exactMatches = (chunkLower.match(new RegExp(`\\b${kw}\\b`, 'g')) || []).length;
-          if (exactMatches > 0) {
-            score += exactMatches * 15;
-          } else if (kw.length >= 5) {
-            const prefixMatches = (chunkLower.match(new RegExp(`\\b${kw.slice(0, 5)}`, 'g')) || []).length;
-            score += prefixMatches * 5;
-          }
-        }
-
-        chunks.push({ baseTitle: row.base_title, filename: row.filename, text: chunkText, score });
+        chunks.push({ baseTitle: row.base_title, filename: row.filename, text: chunkText, textLower: chunkText.toLowerCase(), score: 0 });
       }
+    }
+
+    // --- Peso por rareza (estilo IDF) para las palabras del mensaje actual ----------------------
+    // En una KB grande armada a partir de un solo documento largo (ej. un manual de 700k+
+    // caracteres que cubre muchos temas), palabras genéricas como "correo"/"servidor"/"puerto"
+    // aparecen en decenas de chunks de temas distintos (Gmail, Outlook, Office 365, casos
+    // genéricos...) y "tapan" con volumen a la palabra que realmente distingue de qué tema se
+    // trata (ej. "office"/"365"/"exchange"). Sin este ajuste, una pregunta específica sobre
+    // Office 365 puede terminar trayendo el ejemplo genérico de Gmail en vez del correcto,
+    // porque ambos comparten las mismas palabras comunes. Acá bajamos el peso de las palabras
+    // que aparecen en muchos chunks y subimos el de las que aparecen en pocos.
+    const totalChunks = chunks.length;
+    const currentKeywordIdf = new Map<string, number>();
+    for (const kw of currentKeywords) {
+      if (currentKeywordIdf.has(kw)) continue;
+      const docFreq = chunks.reduce((n, c) => n + (c.textLower.includes(kw) ? 1 : 0), 0);
+      currentKeywordIdf.set(kw, Math.log((totalChunks + 1) / (docFreq + 1)) + 1);
+    }
+
+    for (const c of chunks) {
+      let score = 0;
+
+      // Palabras del mensaje actual: peso completo (ajustado por rareza). Palabras que solo
+      // aparecen en el historial reciente: peso reducido (contexto de apoyo, no debe tapar un
+      // tema nuevo).
+      for (const kw of currentKeywords) {
+        const idf = currentKeywordIdf.get(kw) || 1;
+        const exactMatches = (c.textLower.match(new RegExp(`\\b${kw}\\b`, 'g')) || []).length;
+        if (exactMatches > 0) {
+          // Tope a 3 repeticiones: un párrafo genérico que solo "explica" un término común
+          // (ej. "el servidor de correo entrante es un servidor que...") lo repite varias veces
+          // y, sin este tope, terminaba ganándole por volumen a un chunk específico (ej. el que
+          // realmente tiene el dato de Office 365) que menciona cada palabra una sola vez.
+          score += Math.min(exactMatches, 3) * 15 * idf;
+        } else if (c.textLower.includes(kw)) {
+          // Fallback sin límite de palabra: cubre casos como "office365.com" o "imap.gmail.com",
+          // donde la keyword ("office", "365", "gmail") queda pegada dentro de un dominio/URL sin
+          // separador y \b nunca matchea, pero la palabra sigue siendo relevante para el tema.
+          score += 6 * idf;
+        }
+      }
+      for (const kw of historyKeywords) {
+        const exactMatches = (c.textLower.match(new RegExp(`\\b${kw}\\b`, 'g')) || []).length;
+        if (exactMatches > 0) {
+          score += Math.min(exactMatches, 3) * 2;
+        } else if (c.textLower.includes(kw)) {
+          score += 0.5;
+        }
+      }
+
+      c.score = score;
     }
 
     chunks.sort((a, b) => b.score - a.score);
@@ -341,13 +400,24 @@ export class KnowledgeBaseService {
       return { context: context.trim(), baseIds: [...baseIds], isRelevant };
     }
 
-    // Para KBs grandes: RAG optimizado, seleccionamos los chunks más relevantes
+    // Para KBs grandes: RAG optimizado, seleccionamos los chunks más relevantes.
+    // El matching por palabra clave es literal, no semántico, y a veces ni la rareza (IDF) ni el
+    // tope de repetición alcanzan: ej. "soporte" puede referirse al caso de soporte técnico que
+    // pregunta el cliente, o al nombre de un ROL de permisos de usuario en TACTICA ("rol
+    // SOPORTE") — dos significados distintos con la misma palabra, indistinguibles para un
+    // matcher literal. Mandar bastantes más chunks (antes 16000 chars/~13 chunks, luego
+    // 80000/~50) le da a la IA varios candidatos para leer y elegir el que realmente responde la
+    // pregunta, en vez de depender de que el ranking por palabras clave acierte a la primera. Con
+    // 80000 seguían quedando afuera por poco casos reales (ej. el fragmento de las solapas
+    // "Enlace"/"Contactos" de Correos Programados rankeaba #62 de 470, y con ~50 chunks
+    // seleccionados no entraba) — subimos a 120000/~75 para darles margen.
     let selectedLength = 0;
     const selectedChunks: Chunk[] = [];
-    const MAX_FILTERED_CHARS = 12000;
+    const MAX_FILTERED_CHARS = 120000;
+    const MIN_CHUNKS_REGARDLESS_OF_SCORE = 18;
 
     for (const c of chunks) {
-      if (c.score === 0 && selectedChunks.length >= 2) break;
+      if (c.score === 0 && selectedChunks.length >= MIN_CHUNKS_REGARDLESS_OF_SCORE) break;
       if (selectedLength + c.text.length > MAX_FILTERED_CHARS) break;
       selectedChunks.push(c);
       selectedLength += c.text.length;

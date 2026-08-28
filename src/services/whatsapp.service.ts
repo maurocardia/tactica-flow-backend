@@ -22,8 +22,62 @@ interface WhatsappSession {
 // por lo que reinicios o nuevos despliegues en Railway retoman la sesión automáticamente.
 const sessions = new Map<number, WhatsappSession>();
 
+// Baileys puede re-emitir 'messages.upsert' más de una vez para el mismo mensaje (sobre todo
+// durante reconexiones inestables, ver conflict/replaced en los logs) — sin esto, el mismo
+// mensaje del cliente dispara dos respuestas de IA distintas para la misma pregunta (la segunda
+// ve la primera en su propio historial y termina mezclando temas). Set en memoria por proceso,
+// con tope de tamaño para no crecer indefinidamente en una sesión larga.
+const seenMessageIds = new Set<string>();
+const MAX_SEEN_MESSAGE_IDS = 2000;
+
+function isDuplicateMessage(msgId: string | null | undefined): boolean {
+  if (!msgId) return false;
+  if (seenMessageIds.has(msgId)) return true;
+  seenMessageIds.add(msgId);
+  if (seenMessageIds.size > MAX_SEEN_MESSAGE_IDS) {
+    const oldest = seenMessageIds.values().next().value;
+    if (oldest !== undefined) seenMessageIds.delete(oldest);
+  }
+  return false;
+}
+
 function emitStatus(userId: number, status: WhatsappConnectionStatus) {
   io.emit('whatsapp_status_updated', { userId, status });
+}
+
+// Justo después de conectar (o reconectar), Baileys arranca una sincronización pesada del
+// historial (descarga chats/contactos/mensajes viejos, ver logs "got history notification").
+// Si en ese mismo momento llega un mensaje real y el bot intenta responder, el socket puede
+// estar saturado con esa sincronización y la consulta interna de sendMessage (USync, para
+// resolver los dispositivos del destinatario) tira "Timed Out" (408) aunque la conexión en sí
+// esté sana. Reintentamos un par de veces con una pequeña espera en vez de perder la respuesta.
+function isTransientSendError(error: unknown): boolean {
+  const err = error as { output?: { statusCode?: number }; message?: string } | undefined;
+  const statusCode = err?.output?.statusCode;
+  if (statusCode === 408 || statusCode === 429 || (statusCode ?? 0) >= 500) return true;
+  return /timed out|timeout|econnreset|econnrefused|etimedout/i.test(err?.message || '');
+}
+
+async function sendWithRetry(
+  socket: WASocket,
+  jid: string,
+  content: Parameters<WASocket['sendMessage']>[1],
+  maxRetries = 2
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await socket.sendMessage(jid, content);
+      return;
+    } catch (error) {
+      if (attempt < maxRetries && isTransientSendError(error)) {
+        const delayMs = 2000 * (attempt + 1);
+        console.warn(`⏳ [WhatsApp] Timeout enviando a ${jid} (intento ${attempt + 1}/${maxRetries + 1}), reintentando en ${delayMs}ms...`);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        continue;
+      }
+      throw error;
+    }
+  }
 }
 
 export class WhatsappService {
@@ -65,7 +119,11 @@ export class WhatsappService {
     const { state, saveCreds, clearCreds } = await usePostgresAuthState(userId);
     const socket = makeWASocket({
       auth: state,
-      printQRInTerminal: false
+      printQRInTerminal: false,
+      // Más margen que el default: justo al conectar, Baileys arranca una sincronización pesada
+      // del historial (ver comentario de sendWithRetry) y las queries internas (init, USync)
+      // pueden tardar más de lo normal en esa ventana sin que la conexión esté realmente rota.
+      defaultQueryTimeoutMs: 90000
     });
 
     const session: WhatsappSession = { socket, status: 'connecting', qrDataUrl: null };
@@ -125,6 +183,10 @@ export class WhatsappService {
       if (type !== 'notify') return;
 
       for (const msg of messages) {
+        if (isDuplicateMessage(msg.key?.id)) {
+          console.warn(`⚠️ [WhatsApp] Mensaje duplicado ignorado (id=${msg.key?.id}), usuario ${userId}.`);
+          continue;
+        }
         try {
           await WhatsappService.handleIncomingMessage(userId, socket, msg);
         } catch (err) {
@@ -242,12 +304,12 @@ export class WhatsappService {
     if (!botResult) return;
 
     if (isGroup && participantJid) {
-      await socket.sendMessage(remoteJid, {
+      await sendWithRetry(socket, remoteJid, {
         text: `@${participantJid.split('@')[0]} ${botResult.replyText}`,
         mentions: [participantJid]
       });
     } else {
-      await socket.sendMessage(remoteJid, { text: botResult.replyText });
+      await sendWithRetry(socket, remoteJid, { text: botResult.replyText });
     }
 
     const outbound = await ConversationService.addMessage(conversation.id, 'bot', botResult.replyText, botResult.sourceKbIds);
@@ -297,7 +359,7 @@ export class WhatsappService {
 
     const cleanPhone = phone.replace(/[^0-9]/g, '');
     const jid = `${cleanPhone}@s.whatsapp.net`;
-    await targetSession.socket.sendMessage(jid, { text });
+    await sendWithRetry(targetSession.socket, jid, { text });
     return true;
   }
 
