@@ -44,6 +44,13 @@ const SCHEMA_SQL = `
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   );
 
+  CREATE TABLE IF NOT EXISTS bot_flows (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    data JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
   CREATE TABLE IF NOT EXISTS conversations (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,

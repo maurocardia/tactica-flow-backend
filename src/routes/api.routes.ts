@@ -6,6 +6,7 @@ import { KeywordRuleService, type RuleAction } from '../services/keywordRule.ser
 import { ConversationService, type MessageSender } from '../services/conversation.service.js';
 import { AuthService } from '../services/auth.service.js';
 import { KnowledgeBaseService } from '../services/knowledgeBase.service.js';
+import { db } from '../config/db.js';
 import { io } from '../server.js';
 
 const router = Router();
@@ -412,5 +413,65 @@ router.delete('/bot/rules/:id', async (req: Request, res: Response) => {
     res.status(500).json({ error: error.message || 'Error al eliminar la regla' });
   }
 });
+
+// === DIAGRAMADOR VISUAL DE FLUJOS (Canvas Flow) ===
+router.get('/bot/flow', async (req: Request, res: Response) => {
+  try {
+    const { rows } = await db.query('SELECT data FROM bot_flows WHERE id = $1', ['main_flow']);
+    if (rows.length > 0 && rows[0].data) {
+      return res.json(rows[0].data);
+    }
+    // Si no hay flujo guardado, retornar null para que el frontend use el default o convierta las reglas
+    res.json(null);
+  } catch (error: any) {
+    console.error('❌ Error en GET /bot/flow:', error);
+    res.status(500).json({ error: error.message || 'Error al obtener el flujo del bot' });
+  }
+});
+
+router.post('/bot/flow', async (req: Request, res: Response) => {
+  try {
+    const flowData = req.body;
+    if (!flowData || !flowData.nodes) {
+      return res.status(400).json({ error: 'Datos de flujo inválidos' });
+    }
+
+    const flowId = flowData.id || 'main_flow';
+    const flowName = flowData.name || 'Flujo Principal de Atención';
+
+    await db.query(
+      `INSERT INTO bot_flows (id, name, data, updated_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, data = EXCLUDED.data, updated_at = now()`,
+      [flowId, flowName, JSON.stringify(flowData)]
+    );
+
+    // Sincronizar automáticamente con keyword_rules para compatibilidad con el motor tradicional
+    if (Array.isArray(flowData.nodes)) {
+      for (const node of flowData.nodes) {
+        if (node.data && node.data.keywords && node.data.keywords.length > 0 && node.data.replyText) {
+          const ruleId = node.id;
+          const ruleName = node.data.name || node.title || 'Bloque de Flujo';
+          const ruleKeywords = node.data.keywords;
+          const ruleReplyText = node.data.replyText;
+          const ruleAction = node.type === 'CALL_AI' ? 'CALL_AI' : node.type === 'HANDOFF' ? 'HANDOFF' : 'STATIC_REPLY';
+
+          await db.query(
+            `INSERT INTO keyword_rules (id, name, keywords, reply_text, action, is_active)
+             VALUES ($1, $2, $3, $4, $5, true)
+             ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, keywords = EXCLUDED.keywords, reply_text = EXCLUDED.reply_text, action = EXCLUDED.action`,
+            [ruleId, ruleName, ruleKeywords, ruleReplyText, ruleAction]
+          );
+        }
+      }
+    }
+
+    res.json({ success: true, message: 'Flujo visual guardado y sincronizado correctamente' });
+  } catch (error: any) {
+    console.error('❌ Error en POST /bot/flow:', error);
+    res.status(500).json({ error: error.message || 'Error al guardar el flujo del bot' });
+  }
+});
+
 
 export default router;
