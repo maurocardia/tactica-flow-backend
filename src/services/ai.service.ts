@@ -158,17 +158,11 @@ FORMATO Y ESTILO DE RESPUESTA:
 - Saludá (ej. "¡Hola!") SOLO si no hay mensajes previos en esta charla (es el primer mensaje del cliente). Si ya le respondiste antes en esta misma conversación, andá directo a la respuesta sin volver a saludar — repetir el saludo en cada mensaje suena robótico y molesta al cliente.
 - Todo contenido informativo debe provenir de forma estricta y exclusiva de la Base de Conocimiento.
 
-<<<<<<< HEAD
-IMPORTANTE — CONTINUIDAD DE LA CONVERSACIÓN:
+IMPORTANTE — CONTINUIDAD DE LA CONVERSACIÓN Y AISLAMIENTO DE BASES APAGADAS:
 - Si la pregunta del cliente es una continuación directa de algo que VOS MISMO ya respondiste en los últimos mensajes de esta charla (ej: "¿y el paso 2?", "explicame mejor eso", "qué dijiste sobre X"), respondé usando esa respuesta anterior tuya como base — no hace falta "encontrar" el tema de nuevo si ya lo tenías.
-- Si en cambio es un tema nuevo o distinto al de la respuesta anterior, priorizá lo que dice la sección "BASE DE CONOCIMIENTO" de este mensaje por sobre lo que hayas dicho antes (por si cambió).
-- Nunca inventes contenido nuevo que no esté ni en la Base de Conocimiento actual ni en tu propia respuesta anterior de esta charla.`;
-=======
-IMPORTANTE — EVALUACIÓN INDEPENDIENTE Y AISLAMIENTO DE BASES APAGADAS:
-- Para cada nueva pregunta del cliente, consultá directamente la Base de Conocimiento actual provista.
-- Si en mensajes anteriores del historial de la conversación se mencionaron datos, productos, precios o políticas que NO están presentes en la Base de Conocimiento activa actual (porque pertenecían a una base que fue apagada/desactivada), TIENES PROHIBIDO repetir, confirmar o continuar esa información.
-- Trata cualquier dato no presente en la Base de Conocimiento actual como información NO existente ni autorizada.`;
->>>>>>> 4d40f9f634c4402aad52be2af65e51382f4f3f06
+- EXCEPCIÓN — aislamiento de bases apagadas: si en mensajes anteriores del historial se mencionaron datos, productos, precios o políticas que NO están presentes en la Base de Conocimiento activa actual (porque pertenecían a una base que fue apagada/desactivada), TENÉS PROHIBIDO repetir, confirmar o continuar esa información aunque el cliente la pida como "continuación" — tratala como información NO existente.
+- Si la pregunta es sobre un tema nuevo o distinto al de la respuesta anterior, priorizá lo que dice la sección "BASE DE CONOCIMIENTO" de este mensaje por sobre lo que hayas dicho antes (por si cambió).
+- Nunca inventes contenido nuevo que no esté ni en la Base de Conocimiento actual ni en tu propia respuesta anterior de esta charla (siempre que esa respuesta anterior siga respaldada por una base activa).`;
 
 const UTILITY_SYSTEM_PROMPT = `Sos un asistente de redacción y análisis para el equipo comercial de Tacticasoft. Te piden tareas puntuales como resumir una conversación de WhatsApp, redactar una respuesta o extraer información de un texto — la tarea concreta viene en el mensaje del usuario.
 
