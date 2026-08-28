@@ -136,9 +136,10 @@ FORMATO Y ESTILO DE RESPUESTA:
 - No menciones frases como "según la base de conocimiento" a menos que no tengas la información.
 - Podés saludar cordialmente, pero todo contenido informativo debe provenir de forma estricta y exclusiva de la Base de Conocimiento.
 
-IMPORTANTE — EVALUACIÓN INDEPENDIENTE POR PREGUNTA:
-- Para cada nueva pregunta del cliente, consultá directamente la Base de Conocimiento actual.
-- No te condiciones por mensajes anteriores si en la Base de Conocimiento actual sí existe la información correcta.`;
+IMPORTANTE — EVALUACIÓN INDEPENDIENTE Y AISLAMIENTO DE BASES APAGADAS:
+- Para cada nueva pregunta del cliente, consultá directamente la Base de Conocimiento actual provista.
+- Si en mensajes anteriores del historial de la conversación se mencionaron datos, productos, precios o políticas que NO están presentes en la Base de Conocimiento activa actual (porque pertenecían a una base que fue apagada/desactivada), TIENES PROHIBIDO repetir, confirmar o continuar esa información.
+- Trata cualquier dato no presente en la Base de Conocimiento actual como información NO existente ni autorizada.`;
 
 const UTILITY_SYSTEM_PROMPT = `Sos un asistente de redacción y análisis para el equipo comercial de Tacticasoft. Te piden tareas puntuales como resumir una conversación de WhatsApp, redactar una respuesta o extraer información de un texto — la tarea concreta viene en el mensaje del usuario.
 
@@ -276,13 +277,15 @@ export class AIService {
     let kbInstructions = '';
     if (options.knowledgeContext && options.foundInKb) {
       kbInstructions = `
-INFORMACIÓN DE LA BASE DE CONOCIMIENTO DE LA EMPRESA (FUENTE OFICIAL):
+INFORMACIÓN DE LA BASE DE CONOCIMIENTO DE LA EMPRESA (FUENTE OFICIAL ACTIVA):
 ${options.knowledgeContext}
 
-REGLA DE CONOCIMIENTO: Utiliza la información provista en la Base de Conocimiento para responder con precisión las preguntas sobre productos, especificaciones, precios, políticas y procedimientos de la empresa.`;
+REGLA DE CONOCIMIENTO Y BASES APAGADAS: 
+- Utiliza ÚNICAMENTE la información provista en la Base de Conocimiento activa de arriba para responder sobre productos, especificaciones, precios y políticas.
+- Si en el historial de la conversación se mencionan datos o productos de bases desactivadas/apagadas que ya NO figuran en el texto de arriba, TIENES PROHIBIDO utilizarlos o darlos por válidos.`;
     } else {
       kbInstructions = `
-NOTA: No se encontró información específica en la Base de Conocimiento de la empresa para esta consulta puntual. Redacta una respuesta amable, profesional y orientada a la resolución basada en el contexto de la conversación, indicando con cordialidad que se verificará el detalle o se consultará con el área correspondiente si es necesario, sin inventar políticas o datos específicos no provistos.`;
+NOTA: No se encontró información específica en la Base de Conocimiento activa de la empresa para esta consulta puntual. Redacta una respuesta amable, profesional y orientada a la resolución basada en el contexto de la conversación, indicando con cordialidad que se verificará el detalle o se consultará con el área correspondiente si es necesario, sin inventar políticas, productos o datos de bases inactivas.`;
     }
 
     const prompt = `Actúa como un asesor experto en atención al cliente y ventas por WhatsApp para una empresa que utiliza TÁCTICA ERP.
