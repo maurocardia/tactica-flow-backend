@@ -108,7 +108,7 @@ export class KnowledgeBaseService {
   static async createBase(data: { title: string; description?: string; isActive?: boolean }): Promise<KnowledgeBase> {
     const title = data.title.trim();
     const description = (data.description || '').trim();
-    const isActive = data.isActive !== undefined ? data.isActive : true;
+    const isActive = data.isActive !== undefined ? (data.isActive === true || data.isActive === 'true' as any) : true;
 
     const { rows } = await db.query(
       `INSERT INTO knowledge_bases (title, description, is_active) VALUES ($1, $2, $3) RETURNING *`,
@@ -126,12 +126,13 @@ export class KnowledgeBaseService {
 
     const title = data.title !== undefined ? data.title.trim() : existing.title;
     const description = data.description !== undefined ? data.description.trim() : existing.description;
-    const isActive = data.isActive !== undefined ? data.isActive : existing.isActive;
+    const isActive = data.isActive !== undefined ? (data.isActive === true || data.isActive === 'true' as any) : existing.isActive;
 
     const { rows } = await db.query(
       `UPDATE knowledge_bases SET title = $1, description = $2, is_active = $3 WHERE id = $4 RETURNING *`,
       [title, description, isActive, id]
     );
+    console.log(`📚 [KnowledgeBaseService] Base ${id} actualizada. is_active=${isActive}`);
     return mapBaseRow(rows[0]);
   }
 
@@ -248,7 +249,13 @@ export class KnowledgeBaseService {
     if (rows.length === 0) return { context: '', baseIds: [], isRelevant: false };
 
     const baseIds = new Set<number>();
-    rows.forEach((r) => baseIds.add(r.base_id));
+    const baseTitles = new Set<string>();
+    rows.forEach((r) => {
+      baseIds.add(r.base_id);
+      baseTitles.add(`"${r.base_title}" (ID: ${r.base_id})`);
+    });
+
+    console.log(`📚 [KnowledgeBaseService] Bases de conocimiento activas (${rows.length} docs): ${[...baseTitles].join(', ')}`);
 
     let totalLength = 0;
     rows.forEach((r) => (totalLength += (r.content || '').length));
