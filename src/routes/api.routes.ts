@@ -6,6 +6,7 @@ import { KeywordRuleService, type RuleAction } from '../services/keywordRule.ser
 import { ConversationService, type MessageSender } from '../services/conversation.service.js';
 import { AuthService } from '../services/auth.service.js';
 import { KnowledgeBaseService } from '../services/knowledgeBase.service.js';
+import { WhatsappService } from '../services/whatsapp.service.js';
 import { db } from '../config/db.js';
 import { io } from '../server.js';
 
@@ -130,32 +131,36 @@ router.post('/ai/draft', async (req: Request, res: Response) => {
   }
 });
 
-// Endpoint para transcribir audios / notas de voz con IA
+// Endpoint para transcribir audios / notas de voz con IA (Base64 o descarga directa vía Baileys)
 router.post('/ai/transcribe', async (req: Request, res: Response) => {
   try {
-    const { audioBase64, mimeType = 'audio/ogg' } = req.body;
+    const { audioBase64, mimeType = 'audio/ogg', messageId } = req.body;
 
-    if (!audioBase64) {
-      return res.status(400).json({ error: 'Se requiere el audio en formato base64 (audioBase64).' });
-    }
-
-    let detectedMime = mimeType;
-    if (typeof audioBase64 === 'string' && audioBase64.startsWith('data:')) {
-      const match = audioBase64.match(/^data:([^;]+);/);
-      if (match && match[1]) {
-        detectedMime = match[1];
+    if (audioBase64) {
+      let detectedMime = mimeType;
+      if (typeof audioBase64 === 'string' && audioBase64.startsWith('data:')) {
+        const match = audioBase64.match(/^data:([^;]+);/);
+        if (match && match[1]) {
+          detectedMime = match[1];
+        }
       }
+
+      const cleanBase64 = typeof audioBase64 === 'string' && audioBase64.includes('base64,')
+        ? audioBase64.split('base64,')[1]
+        : audioBase64;
+
+      const audioBuffer = Buffer.from(cleanBase64, 'base64');
+      const transcription = await AIService.transcribeAudio(audioBuffer, detectedMime);
+      return res.json({ success: true, transcription });
     }
 
-    const cleanBase64 = typeof audioBase64 === 'string' && audioBase64.includes('base64,')
-      ? audioBase64.split('base64,')[1]
-      : audioBase64;
+    if (messageId) {
+      const userId = (req as any).user?.id || 1;
+      const transcription = await WhatsappService.transcribeAudioByDataId(userId, messageId);
+      return res.json({ success: true, transcription });
+    }
 
-    const audioBuffer = Buffer.from(cleanBase64, 'base64');
-
-    const transcription = await AIService.transcribeAudio(audioBuffer, detectedMime);
-
-    res.json({ success: true, transcription });
+    return res.status(400).json({ error: 'Se requiere el audio en formato base64 o el identificador del mensaje (messageId).' });
   } catch (error: any) {
     console.error('❌ Error en /api/ai/transcribe:', error?.message || error);
     res.status(500).json({ error: error.message || 'Error al transcribir el audio' });
