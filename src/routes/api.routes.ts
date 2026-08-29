@@ -270,7 +270,7 @@ router.post('/conversations/sync', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'phone y name son obligatorios' });
     }
 
-    const conversation = await ConversationService.syncMessages({
+    const { conversation, lastMessageId } = await ConversationService.syncMessages({
       phone,
       name,
       userId: Number(userId),
@@ -279,7 +279,7 @@ router.post('/conversations/sync', async (req: Request, res: Response) => {
       mode
     });
 
-    res.json({ status: 'ok', conversation, syncedCount: messages.length });
+    res.json({ status: 'ok', conversation, syncedCount: messages.length, lastMessageId });
   } catch (error: any) {
     console.error('❌ Error en /conversations/sync:', error);
     res.status(500).json({ error: error.message || 'Error al sincronizar conversación' });
@@ -294,6 +294,20 @@ router.delete('/conversations/:id/messages', async (req: Request, res: Response)
     res.json({ status: 'ok', message: 'Mensajes eliminados correctamente' });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al vaciar mensajes' });
+  }
+});
+
+// Borra solo los mensajes traídos por el auto-scroll del resumen de IA después de cierto id —
+// usado cuando el usuario cancela/cierra el modal antes de confirmar, para no dejar historial
+// que solo se pidió para calcular ese resumen puntual.
+router.delete('/conversations/:id/messages/after/:afterId', async (req: Request, res: Response) => {
+  try {
+    const conversationId = Number(req.params.id);
+    const afterId = Number(req.params.afterId);
+    const deletedCount = await ConversationService.deleteMessagesAfter(conversationId, afterId);
+    res.json({ status: 'ok', deletedCount });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al revertir mensajes' });
   }
 });
 
