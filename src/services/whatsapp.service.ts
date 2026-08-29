@@ -111,29 +111,17 @@ async function sendWithRetry(
   }
 }
 
+const connectingPromises = new Map<number, Promise<{ status: WhatsappConnectionStatus }>>();
+
 export class WhatsappService {
   static getStatus(userId: number): WhatsappConnectionStatus {
-    return sessions.get(userId)?.status ?? 'disconnected';
+    return sessions.get(userId)?.status ?? (connectingPromises.has(userId) ? 'connecting' : 'disconnected');
   }
 
   static async getStatusAsync(userId: number): Promise<WhatsappConnectionStatus> {
     const session = sessions.get(userId);
     if (session) return session.status;
-
-    try {
-      const { rows } = await db.query(
-        "SELECT data FROM whatsapp_sessions WHERE user_id = $1 AND key_id = 'creds'",
-        [userId]
-      );
-      if (rows.length > 0) {
-        WhatsappService.connect(userId).catch((err) =>
-          console.warn(`[WhatsApp] Auto-connect on getStatus failed for user ${userId}:`, err)
-        );
-        return 'connecting';
-      }
-    } catch (e) {
-      console.warn('[WhatsApp] Error consultando creds en getStatus:', e);
-    }
+    if (connectingPromises.has(userId)) return 'connecting';
     return 'disconnected';
   }
 
@@ -236,92 +224,91 @@ export class WhatsappService {
       return { status: existing.status };
     }
 
-    const { state, saveCreds, clearCreds } = await usePostgresAuthState(userId);
-    const socket = makeWASocket({
-      auth: state,
-      printQRInTerminal: false,
-      // Más margen que el default: justo al conectar, Baileys arranca una sincronización pesada
-      // del historial (ver comentario de sendWithRetry) y las queries internas (init, USync)
-      // pueden tardar más de lo normal en esa ventana sin que la conexión esté realmente rota.
-      defaultQueryTimeoutMs: 90000
-      // syncFullHistory: true — PROBADO Y REVERTIDO (2026-08-28): al activarlo, las DOS sesiones
-      // (antes solo una tenía problemas) entraron en loop agresivo de "conflict/replaced" al
-      // reconectar. Es una sincronización de historial mucho más pesada al conectar, y es
-      // sospechoso que el problema haya empeorado justo al prenderlo — no se confirmó la causa
-      // exacta, pero se apaga por precaución. El listener 'messaging-history.set' de abajo queda
-      // en el código pero no se dispara sin este flag (no hace daño dejarlo).
-    });
+    const inProgress = connectingPromises.get(userId);
+    if (inProgress) {
+      return inProgress;
+    }
 
-    const session: WhatsappSession = { socket, status: 'connecting', qrDataUrl: null };
-    sessions.set(userId, session);
-    emitStatus(userId, 'connecting');
+    const connectPromise = (async () => {
+      try {
+        const { state, saveCreds, clearCreds } = await usePostgresAuthState(userId);
+        const socket = makeWASocket({
+          auth: state,
+          printQRInTerminal: false,
+          defaultQueryTimeoutMs: 90000
+        });
 
-    socket.ev.on('creds.update', saveCreds);
+        const session: WhatsappSession = { socket, status: 'connecting', qrDataUrl: null };
+        sessions.set(userId, session);
+        emitStatus(userId, 'connecting');
 
-    socket.ev.on('connection.update', async (update) => {
-      const { connection, qr, lastDisconnect } = update;
+        socket.ev.on('creds.update', saveCreds);
 
-      if (qr) {
-        session.qrDataUrl = await qrcode.toDataURL(qr);
-        session.status = 'qr_ready';
-        emitStatus(userId, 'qr_ready');
-      }
+        socket.ev.on('connection.update', async (update) => {
+          const { connection, qr, lastDisconnect } = update;
 
-      if (connection === 'open') {
-        try {
-          await saveCreds();
-        } catch (saveErr) {
-          console.warn('[WhatsApp] Error guardando creds en connection.open:', saveErr);
-        }
-        session.status = 'connected';
-        session.qrDataUrl = null;
-        emitStatus(userId, 'connected');
-        console.log(`✅ [WhatsApp] Sesión conectada y lista para el usuario ${userId}`);
-        // Nota: el switch de bot por contacto ya NO se resetea acá al reconectar — queda guardado
-        // tal cual entre sesiones (ver bot_contacts.bot_enabled).
-
-        // Siembra inicial de grupos en bot_contacts: a diferencia de los contactos individuales
-        // (que se van agregando solos a medida que escriben, ver handleIncomingMessage), un grupo
-        // sin actividad reciente nunca dispararía ese camino — y esperar a que alguien escriba en
-        // cada grupo para que aparezca en la lista es mala experiencia. `groupFetchAllParticipating`
-        // trae los grupos reales (jid + nombre) directo de WhatsApp, así que no hay riesgo de
-        // fragmentación por @lid como con los contactos.
-        try {
-          const groups = await socket.groupFetchAllParticipating();
-          for (const [jid, metadata] of Object.entries(groups)) {
-            await BotContactService.seedIfMissing(userId, jid, metadata.subject || jid.split('@')[0], true);
+          if (qr) {
+            session.qrDataUrl = await qrcode.toDataURL(qr);
+            session.status = 'qr_ready';
+            emitStatus(userId, 'qr_ready');
           }
-          console.log(`🔄 [WhatsApp] ${Object.keys(groups).length} grupo(s) sincronizado(s) en bot_contacts para usuario ${userId}.`);
-        } catch (err) {
-          console.error(`⚠️ [WhatsApp] Error sincronizando grupos en bot_contacts para usuario ${userId}:`, err);
-        }
-      }
 
-      if (connection === 'close') {
-        const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output
-          ?.statusCode;
-        const loggedOut = statusCode === DisconnectReason.loggedOut;
+          if (connection === 'open') {
+            try {
+              await saveCreds();
+            } catch (saveErr) {
+              console.warn('[WhatsApp] Error guardando creds en connection.open:', saveErr);
+            }
+            session.status = 'connected';
+            session.qrDataUrl = null;
+            emitStatus(userId, 'connected');
+            console.log(`✅ [WhatsApp] Sesión conectada y lista para el usuario ${userId}`);
 
-        if (loggedOut) {
-          console.warn(`🔒 [WhatsApp] Sesión cerrada desde el teléfono para usuario ${userId}`);
-          sessions.delete(userId);
-          await clearCreds();
-        } else {
-          sessions.delete(userId);
-        }
+            try {
+              const groups = await socket.groupFetchAllParticipating();
+              for (const [jid, metadata] of Object.entries(groups)) {
+                await BotContactService.seedIfMissing(userId, jid, metadata.subject || jid.split('@')[0], true);
+              }
+              console.log(`🔄 [WhatsApp] ${Object.keys(groups).length} grupo(s) sincronizado(s) en bot_contacts para usuario ${userId}.`);
+            } catch (err) {
+              console.error(`⚠️ [WhatsApp] Error sincronizando grupos en bot_contacts para usuario ${userId}:`, err);
+            }
+          }
 
-        emitStatus(userId, 'disconnected');
+          if (connection === 'close') {
+            const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output
+              ?.statusCode;
+            const loggedOut = statusCode === DisconnectReason.loggedOut;
+            const isReplaced = statusCode === DisconnectReason.connectionReplaced || statusCode === 440;
 
-        if (!loggedOut) {
-          console.log(`🔄 [WhatsApp] Reconectando sesión de usuario ${userId} en 3 segundos...`);
-          setTimeout(() => {
-            WhatsappService.connect(userId).catch((err) => {
-              console.error(`❌ [WhatsApp] Error reconectando sesión de usuario ${userId}:`, err);
-            });
-          }, 3000);
-        }
-      }
-    });
+            try {
+              socket.ev.removeAllListeners('connection.update');
+              socket.ev.removeAllListeners('creds.update');
+              socket.ev.removeAllListeners('messages.upsert');
+            } catch (e) {}
+
+            sessions.delete(userId);
+            emitStatus(userId, 'disconnected');
+
+            if (loggedOut) {
+              console.warn(`🔒 [WhatsApp] Sesión cerrada desde el teléfono para usuario ${userId}`);
+              await clearCreds();
+              return;
+            }
+
+            if (isReplaced) {
+              console.warn(`⚠️ [WhatsApp] Sesión de usuario ${userId} reemplazada por otra instancia activa (440). Pausando auto-reconexión para evitar conflicto en bucle.`);
+              return;
+            }
+
+            console.log(`🔄 [WhatsApp] Reconectando sesión de usuario ${userId} en 5 segundos... (código ${statusCode || 'desconocido'})`);
+            setTimeout(() => {
+              WhatsappService.connect(userId).catch((err) => {
+                console.error(`❌ [WhatsApp] Error reconectando sesión de usuario ${userId}:`, err);
+              });
+            }, 5000);
+          }
+        });
 
     // Sincroniza los nombres reales guardados en la agenda del teléfono (no el pushName que cada
     // quien se pone a sí mismo) — ver savedContactNames arriba. Estos eventos los dispara Baileys
@@ -398,6 +385,16 @@ export class WhatsappService {
     });
 
     return { status: session.status };
+  } catch (err) {
+    connectingPromises.delete(userId);
+    throw err;
+  } finally {
+    connectingPromises.delete(userId);
+  }
+})();
+
+connectingPromises.set(userId, connectPromise);
+return connectPromise;
   }
 
   private static async handleIncomingMessage(userId: number, socket: WASocket, msg: any): Promise<void> {
