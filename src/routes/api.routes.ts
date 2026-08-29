@@ -134,7 +134,7 @@ router.post('/ai/draft', async (req: Request, res: Response) => {
 // Endpoint para transcribir audios / notas de voz con IA (Base64 o descarga directa vía Baileys)
 router.post('/ai/transcribe', async (req: Request, res: Response) => {
   try {
-    const { audioBase64, mimeType = 'audio/ogg', messageId } = req.body;
+    const { audioBase64, mimeType = 'audio/ogg', messageId, phone } = req.body;
 
     if (audioBase64) {
       let detectedMime = mimeType;
@@ -156,7 +156,7 @@ router.post('/ai/transcribe', async (req: Request, res: Response) => {
 
     if (messageId) {
       const userId = (req as any).user?.id || 1;
-      const transcription = await WhatsappService.transcribeAudioByDataId(userId, messageId);
+      const transcription = await WhatsappService.transcribeAudioByDataId(userId, messageId, phone);
       return res.json({ success: true, transcription });
     }
 
