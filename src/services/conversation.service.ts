@@ -28,6 +28,11 @@ export interface Conversation {
   // Nombre del grupo de WhatsApp si esta conversación es la de un participante puntual dentro
   // de un grupo (ver WhatsappService.handleIncomingMessage) — null en chats individuales.
   groupName: string | null;
+  // Switch de auto-respuesta POR CONTACTO (distinto del switch global users.bot_enabled). El
+  // bot solo responde a este contacto si esto Y el switch global están en true. Arranca en
+  // false para contactos nuevos y queda guardado tal cual entre sesiones de Baileys (no se
+  // resetea al reconectar).
+  botEnabled: boolean;
 }
 
 // --- Row -> domain object mapping (Postgres devuelve snake_case) ---
@@ -44,6 +49,7 @@ function mapConversationRow(row: any): Conversation {
     status: row.status,
     userId: row.user_id,
     groupName: row.group_name,
+    botEnabled: row.bot_enabled,
   };
 }
 
@@ -135,8 +141,16 @@ export class ConversationService {
     }
   }
 
-  static async listConversations(): Promise<Conversation[]> {
-    const { rows } = await db.query('SELECT * FROM conversations ORDER BY last_message_at DESC');
+  /**
+   * `userId` es opcional para no romper otros usos existentes de este endpoint (ver
+   * DOCUMENTACION_TECNICA.md sobre pruebas vía API/inbox sin auth), pero el panel de "Bot
+   * habilitado por contacto" SIEMPRE debe pasarlo — sin esto, con más de una sesión de WhatsApp
+   * conectada al backend (multi-cuenta), la lista mezclaba contactos de cuentas distintas.
+   */
+  static async listConversations(userId?: number): Promise<Conversation[]> {
+    const { rows } = userId
+      ? await db.query('SELECT * FROM conversations WHERE user_id = $1 ORDER BY last_message_at DESC', [userId])
+      : await db.query('SELECT * FROM conversations ORDER BY last_message_at DESC');
     return rows.map(mapConversationRow);
   }
 
@@ -244,6 +258,46 @@ export class ConversationService {
     );
 
     return mapConversationRow(rows[0]);
+  }
+
+  /**
+   * Crea o actualiza una conversación a partir de la sincronización rápida de Baileys (evento
+   * 'messaging-history.set', ver WhatsappService) — trae contactos reales de WhatsApp aunque
+   * todavía no le hayan escrito al bot, con su nombre y fecha de actividad reales. Nunca
+   * retrocede `last_message_at` (GREATEST) para no pisar una interacción real más reciente que
+   * ya hayamos registrado por otra vía.
+   */
+  static async upsertFromSync(userId: number, phone: string, name: string, lastMessageAt: Date): Promise<void> {
+    const existing = await db.query('SELECT id FROM conversations WHERE phone = $1 AND user_id = $2', [phone, userId]);
+    if (existing.rows.length > 0) {
+      await db.query(
+        `UPDATE conversations SET name = $1, last_message_at = GREATEST(last_message_at, $2) WHERE id = $3`,
+        [name, lastMessageAt, existing.rows[0].id]
+      );
+    } else {
+      await db.query(
+        `INSERT INTO conversations (name, phone, tag, status, user_id, last_message_at)
+         VALUES ($1, $2, 'WhatsApp', 'bot', $3, $4)`,
+        [name, phone, userId, lastMessageAt]
+      );
+    }
+  }
+
+  /**
+   * Actualiza el nombre mostrado de un contacto cuando Baileys sincroniza su nombre real
+   * guardado en la agenda del teléfono (distinto del "pushName" con el que se creó la
+   * conversación — ver WhatsappService, evento 'contacts.upsert'). `jidLocal` es la parte antes
+   * de "@" del JID de esa persona; matchea tanto chats individuales (phone = jidLocal) como
+   * participantes de grupo (phone = "grupoJidLocal-jidLocal"). Para participantes de grupo
+   * reconstruye el sufijo "· NombreDelGrupo" a partir de group_name en vez de pisarlo.
+   */
+  static async updateNameIfKnown(jidLocal: string, userId: number, savedName: string): Promise<void> {
+    await db.query(
+      `UPDATE conversations
+       SET name = CASE WHEN group_name IS NOT NULL THEN $1 || ' · ' || group_name ELSE $1 END
+       WHERE user_id = $2 AND (phone = $3 OR phone LIKE '%-' || $3)`,
+      [savedName, userId, jidLocal]
+    );
   }
 
   /**
