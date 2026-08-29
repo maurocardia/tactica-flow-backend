@@ -122,6 +122,21 @@ export class WhatsappService {
     const session = sessions.get(userId);
     if (session) return session.status;
     if (connectingPromises.has(userId)) return 'connecting';
+
+    try {
+      const { rows } = await db.query(
+        "SELECT data FROM whatsapp_sessions WHERE user_id = $1 AND key_id = 'creds'",
+        [userId]
+      );
+      if (rows.length > 0) {
+        WhatsappService.connect(userId).catch((err) =>
+          console.warn(`[WhatsApp] Auto-connect on getStatus failed for user ${userId}:`, err)
+        );
+        return 'connecting';
+      }
+    } catch (e) {
+      console.warn('[WhatsApp] Error consultando creds en getStatus:', e);
+    }
     return 'disconnected';
   }
 
