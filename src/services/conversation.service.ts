@@ -366,7 +366,7 @@ export class ConversationService {
     groupName?: string | null;
     messages: { sender: MessageSender; text: string; createdAt?: string }[];
     mode?: 'replace' | 'merge';
-  }): Promise<Conversation> {
+  }): Promise<{ conversation: Conversation; lastMessageId: number | null }> {
     const conversation = await this.findOrCreateByPhone(
       params.phone,
       params.name,
@@ -384,6 +384,7 @@ export class ConversationService {
       }
 
       const validMessages = params.messages.filter((m) => m && m.text && m.text.trim());
+      let lastMessageId: number | null = null;
       if (validMessages.length > 0) {
         const values: any[] = [];
         const placeholders: string[] = [];
@@ -397,10 +398,11 @@ export class ConversationService {
             m.createdAt ? new Date(m.createdAt) : new Date()
           );
         });
-        await client.query(
-          `INSERT INTO messages (conversation_id, sender, text, created_at) VALUES ${placeholders.join(', ')}`,
+        const inserted = await client.query(
+          `INSERT INTO messages (conversation_id, sender, text, created_at) VALUES ${placeholders.join(', ')} RETURNING id`,
           values
         );
+        lastMessageId = inserted.rows.reduce((max, r) => Math.max(max, r.id), 0);
       }
 
       const last = validMessages[validMessages.length - 1];
@@ -413,13 +415,26 @@ export class ConversationService {
       );
 
       await client.query('COMMIT');
-      return mapConversationRow(rows[0]);
+      return { conversation: mapConversationRow(rows[0]), lastMessageId };
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Borra solo los mensajes insertados DESPUÉS de cierto id — usado para revertir una tanda de
+   * mensajes traídos por el auto-scroll del resumen de IA cuando el usuario cancela o cierra el
+   * modal antes de confirmar, sin tocar el historial que ya existía antes de esa sesión.
+   */
+  static async deleteMessagesAfter(conversationId: number, afterId: number): Promise<number> {
+    const { rowCount } = await db.query('DELETE FROM messages WHERE conversation_id = $1 AND id > $2', [
+      conversationId,
+      afterId,
+    ]);
+    return rowCount ?? 0;
   }
 
   /**
