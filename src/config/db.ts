@@ -226,8 +226,7 @@ const SCHEMA_SQL = `
     UNIQUE (user_id, owner_jid, jid)
   );
 
-  CREATE INDEX IF NOT EXISTS idx_bot_contacts_user_id ON bot_contacts(user_id, owner_jid, last_activity DESC);
-
+  -- Agregar la columna si la tabla ya existía antes de crear índices
   ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS owner_jid TEXT NOT NULL DEFAULT '';
   ALTER TABLE bot_contacts DROP CONSTRAINT IF EXISTS bot_contacts_user_id_jid_key CASCADE;
   DO $$
@@ -236,6 +235,8 @@ const SCHEMA_SQL = `
       ALTER TABLE bot_contacts ADD CONSTRAINT bot_contacts_user_id_owner_jid_jid_key UNIQUE (user_id, owner_jid, jid);
     END IF;
   END $$;
+
+  CREATE INDEX IF NOT EXISTS idx_bot_contacts_user_id ON bot_contacts(user_id, owner_jid, last_activity DESC);
 `;
 
 /**
