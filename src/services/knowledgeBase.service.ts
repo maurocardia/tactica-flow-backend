@@ -290,7 +290,8 @@ export class KnowledgeBaseService {
         .toLowerCase()
         .replace(/[^\w\sáéíóúüñ]/gi, ' ')
         .split(/\s+/)
-        .filter((w) => w.length >= 3 && !STOPWORDS.has(w));
+        .filter((w) => w.length >= 3 && !STOPWORDS.has(w))
+        .map((w) => (w.endsWith('s') ? w.slice(0, -1) : w));
 
     // El mensaje ACTUAL pesa más que el historial: si el cliente cambia de tema de golpe,
     // sus propias palabras clave dominan el puntaje y el chunk relevante al tema nuevo gana,
@@ -364,7 +365,7 @@ export class KnowledgeBaseService {
       // tema nuevo).
       for (const kw of currentKeywords) {
         const idf = currentKeywordIdf.get(kw) || 1;
-        const exactMatches = (c.textLower.match(new RegExp(`\\b${kw}\\b`, 'g')) || []).length;
+        const exactMatches = (c.textLower.match(new RegExp(`\\b${kw}s?\\b`, 'g')) || []).length;
         if (exactMatches > 0) {
           // Tope a 3 repeticiones: un párrafo genérico que solo "explica" un término común
           // (ej. "el servidor de correo entrante es un servidor que...") lo repite varias veces
@@ -379,7 +380,7 @@ export class KnowledgeBaseService {
         }
       }
       for (const kw of historyKeywords) {
-        const exactMatches = (c.textLower.match(new RegExp(`\\b${kw}\\b`, 'g')) || []).length;
+        const exactMatches = (c.textLower.match(new RegExp(`\\b${kw}s?\\b`, 'g')) || []).length;
         if (exactMatches > 0) {
           score += Math.min(exactMatches, 3) * 2;
         } else if (c.textLower.includes(kw)) {
