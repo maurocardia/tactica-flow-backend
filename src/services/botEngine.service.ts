@@ -2,6 +2,7 @@ import { AIService } from './ai.service.js';
 import { TacticaCredentials } from './tacticaApi.service.js';
 import { KeywordRuleService } from './keywordRule.service.js';
 import { KnowledgeBaseService } from './knowledgeBase.service.js';
+import { FlowEngineService } from './flowEngine.service.js';
 
 export type { KeywordRule } from './keywordRule.service.js';
 
@@ -16,19 +17,23 @@ export class BotEngineService {
     tacticaCredentials: TacticaCredentials = {},
     aiFallbackEnabled: boolean = true,
     customInstructions: string = ''
-  ): Promise<{ replyText: string; source: 'KEYWORD_RULE' | 'AI_AGENT' | 'TACTICA_API'; sourceKbIds: number[] } | null> {
+  ): Promise<{ replyText: string; source: 'KEYWORD_RULE' | 'AI_AGENT' | 'TACTICA_API' | 'FLOW_ENGINE'; sourceKbIds: number[] } | null> {
     const textLower = incomingText.trim().toLowerCase();
 
-    // 0. Historial reciente para retener entidades (ej: "empresa") en preguntas de seguimiento.
-    // Solo los últimos 2 turnos (antes 4): las respuestas del bot suelen ser largas y detalladas
-    // (listas numeradas de varios pasos), así que con 4 turnos el historial aportaba demasiadas
-    // palabras genéricas del manual (decenas) que competían con las 2-3 palabras específicas del
-    // mensaje nuevo y terminaban tapando el tema actual en la búsqueda de la Base de Conocimiento.
+    // 0. Historial reciente
     const historyText = conversationHistory
       .slice(-2)
       .map((m: any) => (typeof m === 'string' ? m : m.content || m.text || ''))
       .join(' ');
-    // 1. Evaluar Reglas por Palabras Clave (Keyword Triggers)
+
+    // 1. Evaluar Flujo Visual (Con Estado)
+    const flowResult = await FlowEngineService.processMessage(incomingText, customerPhoneNumber);
+    if (flowResult) {
+      console.log(`🤖 [BOT ENGINE] Mensaje procesado por FlowEngine (estado guardado).`);
+      return flowResult;
+    }
+
+    // 2. Evaluar Reglas por Palabras Clave (Keyword Triggers) - Legacy/Global
     for (const rule of await KeywordRuleService.listActiveRules()) {
       const matched = rule.keywords.some(kw => textLower.includes(kw));
       if (matched) {
