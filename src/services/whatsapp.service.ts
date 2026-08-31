@@ -571,9 +571,9 @@ return connectPromise;
     const session = sessions.get(userId);
     if (session) {
       try {
-        session.socket.end(undefined);
+        await session.socket.logout();
       } catch (err) {
-        console.error(`⚠️ [WhatsApp] Error cerrando el socket del usuario ${userId}:`, err);
+        console.error(`⚠️ [WhatsApp] Error cerrando el socket (logout) del usuario ${userId}:`, err);
       }
     }
 
