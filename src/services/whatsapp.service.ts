@@ -616,8 +616,17 @@ return connectPromise;
       throw new Error('No hay una sesión de WhatsApp conectada para enviar el mensaje.');
     }
 
-    const cleanPhone = phone.replace(/[^0-9]/g, '');
-    const jid = `${cleanPhone}@s.whatsapp.net`;
+    let jid: string;
+    if (phone.includes('@')) {
+      jid = phone;
+    } else if (phone.includes('-') && phone.startsWith('120363')) {
+      jid = `${phone.split('-')[0]}@g.us`;
+    } else if (phone.startsWith('120363')) {
+      jid = `${phone}@g.us`;
+    } else {
+      const cleanPhone = phone.replace(/[^0-9]/g, '');
+      jid = `${cleanPhone}@s.whatsapp.net`;
+    }
     await sendWithRetry(targetSession.socket, jid, { text });
     return true;
   }
