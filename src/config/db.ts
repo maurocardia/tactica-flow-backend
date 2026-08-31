@@ -216,16 +216,26 @@ const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS bot_contacts (
     id SERIAL PRIMARY KEY,
     user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    owner_jid TEXT NOT NULL DEFAULT '',
     jid TEXT NOT NULL,
     name TEXT NOT NULL,
     is_group BOOLEAN NOT NULL DEFAULT false,
     bot_enabled BOOLEAN NOT NULL DEFAULT false,
     last_activity TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (user_id, jid)
+    UNIQUE (user_id, owner_jid, jid)
   );
 
-  CREATE INDEX IF NOT EXISTS idx_bot_contacts_user_id ON bot_contacts(user_id, last_activity DESC);
+  CREATE INDEX IF NOT EXISTS idx_bot_contacts_user_id ON bot_contacts(user_id, owner_jid, last_activity DESC);
+
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS owner_jid TEXT NOT NULL DEFAULT '';
+  ALTER TABLE bot_contacts DROP CONSTRAINT IF EXISTS bot_contacts_user_id_jid_key CASCADE;
+  DO $$
+  BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'bot_contacts_user_id_owner_jid_jid_key') THEN
+      ALTER TABLE bot_contacts ADD CONSTRAINT bot_contacts_user_id_owner_jid_jid_key UNIQUE (user_id, owner_jid, jid);
+    END IF;
+  END $$;
 `;
 
 /**

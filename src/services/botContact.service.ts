@@ -1,8 +1,10 @@
 import { db } from '../config/db.js';
+import { WhatsappService } from './whatsapp.service.js';
 
 export interface BotContact {
   id: number;
   userId: number;
+  ownerJid: string;
   jid: string;
   name: string;
   isGroup: boolean;
@@ -14,6 +16,7 @@ function mapRow(row: any): BotContact {
   return {
     id: row.id,
     userId: row.user_id,
+    ownerJid: row.owner_jid,
     jid: row.jid,
     name: row.name,
     isGroup: row.is_group,
@@ -42,13 +45,14 @@ export class BotContactService {
     activityAt: Date = new Date(),
     defaultEnabled: boolean = false
   ): Promise<void> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
     await db.query(
-      `INSERT INTO bot_contacts (user_id, jid, name, is_group, last_activity, bot_enabled)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (user_id, jid) DO UPDATE
+      `INSERT INTO bot_contacts (user_id, owner_jid, jid, name, is_group, last_activity, bot_enabled)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (user_id, owner_jid, jid) DO UPDATE
        SET name = EXCLUDED.name,
            last_activity = GREATEST(bot_contacts.last_activity, EXCLUDED.last_activity)`,
-      [userId, jid, name, isGroup, activityAt, defaultEnabled]
+      [userId, ownerJid, jid, name, isGroup, activityAt, defaultEnabled]
     );
   }
 
@@ -93,16 +97,18 @@ export class BotContactService {
     isGroup: boolean,
     activityAt: Date = new Date(0)
   ): Promise<void> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
     await db.query(
-      `INSERT INTO bot_contacts (user_id, jid, name, is_group, last_activity)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (user_id, jid) DO UPDATE SET name = EXCLUDED.name`,
-      [userId, jid, name, isGroup, activityAt]
+      `INSERT INTO bot_contacts (user_id, owner_jid, jid, name, is_group, last_activity)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (user_id, owner_jid, jid) DO UPDATE SET name = EXCLUDED.name`,
+      [userId, ownerJid, jid, name, isGroup, activityAt]
     );
   }
 
   static async list(userId: number): Promise<BotContact[]> {
-    const { rows } = await db.query('SELECT * FROM bot_contacts WHERE user_id = $1 ORDER BY last_activity DESC', [userId]);
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query('SELECT * FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 ORDER BY last_activity DESC', [userId, ownerJid]);
     return rows.map(mapRow);
   }
 
@@ -113,7 +119,8 @@ export class BotContactService {
 
   /** Usado por WhatsappService para decidir si le responde o no a este contacto/grupo. */
   static async isEnabled(userId: number, jid: string): Promise<boolean> {
-    const { rows } = await db.query('SELECT bot_enabled FROM bot_contacts WHERE user_id = $1 AND jid = $2', [userId, jid]);
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query('SELECT bot_enabled FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND jid = $3', [userId, ownerJid, jid]);
     return rows.length > 0 ? rows[0].bot_enabled : false;
   }
 
@@ -125,12 +132,13 @@ export class BotContactService {
 
   /** Alta manual desde el panel (número que todavía no le escribió al bot). */
   static async addManual(userId: number, jid: string, name: string, enabled: boolean): Promise<BotContact> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
     const { rows } = await db.query(
-      `INSERT INTO bot_contacts (user_id, jid, name, is_group, bot_enabled)
-       VALUES ($1, $2, $3, false, $4)
-       ON CONFLICT (user_id, jid) DO UPDATE SET bot_enabled = EXCLUDED.bot_enabled
+      `INSERT INTO bot_contacts (user_id, owner_jid, jid, name, is_group, bot_enabled)
+       VALUES ($1, $2, $3, $4, false, $5)
+       ON CONFLICT (user_id, owner_jid, jid) DO UPDATE SET bot_enabled = EXCLUDED.bot_enabled
        RETURNING *`,
-      [userId, jid, name, enabled]
+      [userId, ownerJid, jid, name, enabled]
     );
     return mapRow(rows[0]);
   }

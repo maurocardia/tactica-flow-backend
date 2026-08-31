@@ -1,0 +1,1 @@
+import { db } from './src/config/db.js'; db.query('SELECT conname FROM pg_constraint WHERE conrelid = ''bot_contacts''::regclass AND contype = ''u''').then(res => {console.log(res.rows); process.exit(0)});

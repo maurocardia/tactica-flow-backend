@@ -140,6 +140,14 @@ export class WhatsappService {
     return 'disconnected';
   }
 
+  static getOwnerJid(userId: number): string | null {
+    const session = sessions.get(userId);
+    if (session?.socket?.user?.id) {
+      return session.socket.user.id.split(':')[0] + '@s.whatsapp.net';
+    }
+    return null;
+  }
+
   static getQr(userId: number): string | null {
     return sessions.get(userId)?.qrDataUrl ?? null;
   }
@@ -573,7 +581,7 @@ return connectPromise;
       try {
         await session.socket.logout();
       } catch (err) {
-        console.error(`⚠️ [WhatsApp] Error cerrando el socket (logout) del usuario ${userId}:`, err);
+        console.error(`🔴 [WhatsApp] Error cerrando el socket (logout) del usuario ${userId}:`, err);
       }
     }
 
@@ -582,7 +590,7 @@ return connectPromise;
       const { clearCreds } = await usePostgresAuthState(userId);
       await clearCreds();
     } catch (err) {
-      console.error(`⚠️ [WhatsApp] Error borrando credenciales en PostgreSQL:`, err);
+      console.error(`🔴 [WhatsApp] Error limpiando credenciales o contactos para ${userId}:`, err);
     }
 
     emitStatus(userId, 'disconnected');
