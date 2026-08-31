@@ -468,20 +468,78 @@ router.post('/bot/flow', async (req: Request, res: Response) => {
 
     // Sincronizar automáticamente con keyword_rules para compatibilidad con el motor tradicional
     if (Array.isArray(flowData.nodes)) {
-      for (const node of flowData.nodes) {
-        if (node.data && node.data.keywords && node.data.keywords.length > 0 && node.data.replyText) {
-          const ruleId = node.id;
-          const ruleName = node.data.name || node.title || 'Bloque de Flujo';
-          const ruleKeywords = node.data.keywords;
-          const ruleReplyText = node.data.replyText;
-          const ruleAction = node.type === 'CALL_AI' ? 'CALL_AI' : node.type === 'HANDOFF' ? 'HANDOFF' : 'STATIC_REPLY';
+      const buildNodeResponse = (nodeId: string, visited = new Set<string>()): { text: string, action: string } => {
+        if (visited.has(nodeId)) return { text: '', action: 'STATIC_REPLY' };
+        visited.add(nodeId);
 
-          await db.query(
-            `INSERT INTO keyword_rules (id, name, keywords, reply_text, action, is_active)
-             VALUES ($1, $2, $3, $4, $5, true)
-             ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, keywords = EXCLUDED.keywords, reply_text = EXCLUDED.reply_text, action = EXCLUDED.action`,
-            [ruleId, ruleName, ruleKeywords, ruleReplyText, ruleAction]
-          );
+        const node = flowData.nodes.find((n: any) => n.id === nodeId);
+        if (!node) return { text: '', action: 'STATIC_REPLY' };
+
+        let text = node.data?.replyText || '';
+        let action = node.type === 'CALL_AI' ? 'CALL_AI' : node.type === 'HANDOFF' ? 'HANDOFF' : 'STATIC_REPLY';
+
+        // Si es un menú, agregar las opciones al texto
+        if (node.type === 'OPTIONS_MENU' && Array.isArray(node.data?.options)) {
+          const optionsText = node.data.options.map((opt: any) => `${opt.keyword}. ${opt.label}`).join('\n');
+          if (optionsText) {
+            text += (text ? '\n\n' : '') + optionsText;
+          }
+        }
+
+        // Seguir la conexión 'default'
+        if (Array.isArray(flowData.connections)) {
+          const defaultConn = flowData.connections.find((c: any) => c.sourceNodeId === nodeId && (c.sourcePortId === 'default' || !c.sourcePortId));
+          if (defaultConn) {
+            const nextResponse = buildNodeResponse(defaultConn.targetNodeId, visited);
+            if (nextResponse.text) {
+              text += (text ? '\n\n' : '') + nextResponse.text;
+            }
+            if (nextResponse.action !== 'STATIC_REPLY') {
+              action = nextResponse.action;
+            }
+          }
+        }
+
+        return { text, action };
+      };
+
+      for (const node of flowData.nodes) {
+        // 1. Nodos con keywords
+        if (node.data && node.data.keywords && node.data.keywords.length > 0) {
+          const { text, action } = buildNodeResponse(node.id);
+          if (text) {
+            const ruleId = node.id;
+            const ruleName = node.data.name || node.title || 'Bloque de Flujo';
+            const ruleKeywords = node.data.keywords;
+
+            await db.query(
+              `INSERT INTO keyword_rules (id, name, keywords, reply_text, action, is_active)
+               VALUES ($1, $2, $3, $4, $5, true)
+               ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, keywords = EXCLUDED.keywords, reply_text = EXCLUDED.reply_text, action = EXCLUDED.action`,
+              [ruleId, ruleName, ruleKeywords, text, action]
+            );
+          }
+        }
+
+        // 2. Nodos tipo OPTIONS_MENU (crear reglas para las opciones si están conectadas)
+        if (node.type === 'OPTIONS_MENU' && Array.isArray(node.data?.options) && Array.isArray(flowData.connections)) {
+          for (const opt of node.data.options) {
+            const conn = flowData.connections.find((c: any) => c.sourceNodeId === node.id && c.sourcePortId === opt.id);
+            if (conn && opt.keyword) {
+              const { text, action } = buildNodeResponse(conn.targetNodeId);
+              if (text) {
+                const ruleId = opt.id;
+                const ruleName = `Opción: ${opt.label}`;
+                
+                await db.query(
+                  `INSERT INTO keyword_rules (id, name, keywords, reply_text, action, is_active)
+                   VALUES ($1, $2, $3, $4, $5, true)
+                   ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, keywords = EXCLUDED.keywords, reply_text = EXCLUDED.reply_text, action = EXCLUDED.action`,
+                  [ruleId, ruleName, [String(opt.keyword).trim()], text, action]
+                );
+              }
+            }
+          }
         }
       }
     }
