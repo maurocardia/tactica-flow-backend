@@ -8,8 +8,9 @@ interface FlowResponse {
 }
 
 // Memory state for user's current node in the flow.
-// Maps customerPhoneNumber -> nodeId
-const userStates = new Map<string, string>();
+// Maps customerPhoneNumber -> { nodeId, timestamp }
+const userStates = new Map<string, { nodeId: string, timestamp: number }>();
+const SESSION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 export class FlowEngineService {
   static clearUserState(phoneNumber: string) {
@@ -73,39 +74,66 @@ export class FlowEngineService {
     }
 
     const textLower = incomingText.trim().toLowerCase();
-    const currentNodeId = userStates.get(customerPhoneNumber);
+    
+    // Check timeout
+    const state = userStates.get(customerPhoneNumber);
+    if (state && (Date.now() - state.timestamp > SESSION_TIMEOUT_MS)) {
+      userStates.delete(customerPhoneNumber);
+    }
+    const currentNodeId = userStates.get(customerPhoneNumber)?.nodeId;
 
     // 1. If user is in a state, check outgoing options
     if (currentNodeId) {
       const currentNode = flowData.nodes.find((n: any) => n.id === currentNodeId);
       if (currentNode && currentNode.type === 'OPTIONS_MENU' && Array.isArray(currentNode.data?.options)) {
-        // Find if user typed one of the options
-        const matchedOption = currentNode.data.options.find((opt: any) => String(opt.keyword).trim().toLowerCase() === textLower);
         
-        if (matchedOption) {
-          const conn = flowData.connections.find((c: any) => c.sourceNodeId === currentNodeId && c.sourcePortId === matchedOption.id);
-          if (conn) {
-            const { text, action, endNodeId } = this.buildNodeChainResponse(conn.targetNodeId, flowData);
-            userStates.set(customerPhoneNumber, endNodeId);
+        // Is the user trying to forcefully exit by hitting a trigger keyword?
+        let isGlobalTrigger = false;
+        for (const node of flowData.nodes) {
+          if (node.data && Array.isArray(node.data.keywords) && node.data.keywords.length > 0) {
+            if (node.data.keywords.some((kw: string) => textLower.includes(kw.toLowerCase()))) {
+              isGlobalTrigger = true;
+              break;
+            }
+          }
+        }
+
+        if (!isGlobalTrigger) {
+          // Find if user typed one of the options
+          const matchedOption = currentNode.data.options.find((opt: any) => String(opt.keyword).trim().toLowerCase() === textLower);
+          
+          if (matchedOption) {
+            const conn = flowData.connections.find((c: any) => c.sourceNodeId === currentNodeId && c.sourcePortId === matchedOption.id);
+            if (conn) {
+              const { text, action, endNodeId } = this.buildNodeChainResponse(conn.targetNodeId, flowData);
+              userStates.set(customerPhoneNumber, { nodeId: endNodeId, timestamp: Date.now() });
+              return {
+                replyText: text,
+                source: 'FLOW_ENGINE',
+                sourceKbIds: [],
+                action
+              };
+            }
+          } else {
+            // Invalid option fallback: keep them in the menu and warn
+            userStates.set(customerPhoneNumber, { nodeId: currentNodeId, timestamp: Date.now() }); // refresh timeout
             return {
-              replyText: text,
+              replyText: 'Por favor, elige una opción válida del menú.',
               source: 'FLOW_ENGINE',
-              sourceKbIds: [],
-              action
+              sourceKbIds: []
             };
           }
         }
       }
     }
 
-    // 2. If not in a valid state, or typed something that didn't match the current menu,
-    // check all TRIGGER nodes globally to see if they are starting a flow.
+    // 2. If not in a valid state, or typed a global trigger
     for (const node of flowData.nodes) {
       if (node.data && Array.isArray(node.data.keywords) && node.data.keywords.length > 0) {
         const matched = node.data.keywords.some((kw: string) => textLower.includes(kw.toLowerCase()));
         if (matched) {
           const { text, action, endNodeId } = this.buildNodeChainResponse(node.id, flowData);
-          userStates.set(customerPhoneNumber, endNodeId);
+          userStates.set(customerPhoneNumber, { nodeId: endNodeId, timestamp: Date.now() });
           return {
             replyText: text,
             source: 'FLOW_ENGINE',
