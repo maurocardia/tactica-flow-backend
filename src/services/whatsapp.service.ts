@@ -31,10 +31,11 @@ const sessions = new Map<number, WhatsappSession>();
 const seenMessageIds = new Set<string>();
 const MAX_SEEN_MESSAGE_IDS = 2000;
 
-function isDuplicateMessage(msgId: string | null | undefined): boolean {
+function isDuplicateMessage(userId: number, msgId: string | null | undefined): boolean {
   if (!msgId) return false;
-  if (seenMessageIds.has(msgId)) return true;
-  seenMessageIds.add(msgId);
+  const key = `${userId}:${msgId}`;
+  if (seenMessageIds.has(key)) return true;
+  seenMessageIds.add(key);
   if (seenMessageIds.size > MAX_SEEN_MESSAGE_IDS) {
     const oldest = seenMessageIds.values().next().value;
     if (oldest !== undefined) seenMessageIds.delete(oldest);
@@ -395,7 +396,7 @@ export class WhatsappService {
       if (type !== 'notify') return;
 
       for (const msg of messages) {
-        if (isDuplicateMessage(msg.key?.id)) {
+        if (isDuplicateMessage(userId, msg.key?.id)) {
           console.warn(`⚠️ [WhatsApp] Mensaje duplicado ignorado (id=${msg.key?.id}), usuario ${userId}.`);
           continue;
         }
