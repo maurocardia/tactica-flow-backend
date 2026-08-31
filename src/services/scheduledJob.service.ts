@@ -1,8 +1,10 @@
 import { db } from '../config/db.js';
+import { WhatsappService } from './whatsapp.service.js';
 
 export interface ScheduledJob {
   id: number;
-  user_id?: number | null;
+  user_id: number | null;
+  owner_jid: string;
   contact_name: string;
   phone: string;
   message_text: string;
@@ -10,8 +12,8 @@ export interface ScheduledJob {
   recurrence: 'once' | 'daily' | 'weekly' | 'monthly';
   stop_on_reply: boolean;
   status: 'pending' | 'sent' | 'cancelled' | 'failed';
-  sent_at?: string | null;
-  error_message?: string | null;
+  sent_at: string | null;
+  error_message: string | null;
   created_at: string;
 }
 
@@ -27,15 +29,17 @@ export interface CreateScheduledJobInput {
 
 export class ScheduledJobService {
   static async create(input: CreateScheduledJobInput): Promise<ScheduledJob> {
+    const ownerJid = input.userId ? (WhatsappService.getOwnerJid(input.userId) || '') : '';
     const query = `
       INSERT INTO scheduled_jobs (
-        user_id, contact_name, phone, message_text, execute_at, recurrence, stop_on_reply, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+        user_id, owner_jid, contact_name, phone, message_text, execute_at, recurrence, stop_on_reply, status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
       RETURNING *;
     `;
 
     const values = [
       input.userId || null,
+      ownerJid,
       input.contactName,
       input.phone,
       input.messageText,
@@ -53,8 +57,9 @@ export class ScheduledJobService {
     const values: any[] = [];
 
     if (userId) {
-      query += ` WHERE user_id = $1 OR user_id IS NULL`;
-      values.push(userId);
+      const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+      query += ` WHERE (user_id = $1 OR user_id IS NULL) AND (owner_jid = '' OR owner_jid = $2)`;
+      values.push(userId, ownerJid);
     }
 
     query += ` ORDER BY execute_at ASC;`;
@@ -100,7 +105,13 @@ export class ScheduledJobService {
       ORDER BY execute_at ASC;
     `;
     const result = await db.query(query);
-    return result.rows;
+    
+    // Filtramos para que solo se envíen si el WhatsApp actualmente conectado es el que lo programó
+    return result.rows.filter(job => {
+      if (!job.user_id) return true;
+      const currentJid = WhatsappService.getOwnerJid(job.user_id) || '';
+      return job.owner_jid === '' || job.owner_jid === currentJid;
+    });
   }
 
   static async markSent(id: number, recurrence: string, executeAt: Date): Promise<void> {

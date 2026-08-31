@@ -62,6 +62,9 @@ const SCHEMA_SQL = `
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'bot', 'resolved'))
   );
 
+  ALTER TABLE conversations ADD COLUMN IF NOT EXISTS owner_jid TEXT NOT NULL DEFAULT '';
+  CREATE INDEX IF NOT EXISTS idx_conversations_owner_jid ON conversations(user_id, owner_jid);
+
   CREATE TABLE IF NOT EXISTS messages (
     id SERIAL PRIMARY KEY,
     conversation_id INT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -145,6 +148,7 @@ const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS scheduled_jobs (
     id SERIAL PRIMARY KEY,
     user_id INT REFERENCES users(id) ON DELETE SET NULL,
+    owner_jid TEXT NOT NULL DEFAULT '',
     contact_name TEXT NOT NULL,
     phone TEXT NOT NULL,
     message_text TEXT NOT NULL,
@@ -158,6 +162,9 @@ const SCHEMA_SQL = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_execute ON scheduled_jobs(status, execute_at);
+  
+  -- Agregar la columna si la tabla ya existía
+  ALTER TABLE scheduled_jobs ADD COLUMN IF NOT EXISTS owner_jid TEXT NOT NULL DEFAULT '';
 
   -- Switch "Responder también en grupos" del panel: por default el bot solo autoresponde en
   -- chats individuales (ver WhatsappService.handleIncomingMessage, que hoy ignora todo mensaje

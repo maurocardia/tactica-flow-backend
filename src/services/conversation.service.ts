@@ -1,4 +1,5 @@
 import { db } from '../config/db.js';
+import { WhatsappService } from './whatsapp.service.js';
 
 export type MessageSender = 'customer' | 'agent' | 'bot';
 export type ConversationStatus = 'active' | 'bot' | 'resolved';
@@ -231,16 +232,14 @@ export class ConversationService {
     userId: number,
     groupName: string | null = null
   ): Promise<Conversation> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
     const existing = await db.query(
-      'SELECT * FROM conversations WHERE phone = $1 AND user_id = $2',
-      [phone, userId]
+      'SELECT * FROM conversations WHERE phone = $1 AND user_id = $2 AND owner_jid = $3',
+      [phone, userId, ownerJid]
     );
 
     if (existing.rows.length > 0) {
       const current = mapConversationRow(existing.rows[0]);
-      // Backfill: conversaciones creadas antes de que existiera group_name (o si el grupo
-      // cambió de nombre en WhatsApp) se actualizan acá en vez de quedar desactualizadas para
-      // siempre — si no, listByGroupName() nunca las encuentra aunque el grupo sea el mismo.
       if (groupName && current.groupName !== groupName) {
         const { rows } = await db.query(
           `UPDATE conversations SET group_name = $1 WHERE id = $2 RETURNING *`,
@@ -252,23 +251,20 @@ export class ConversationService {
     }
 
     const { rows } = await db.query(
-      `INSERT INTO conversations (name, phone, tag, status, user_id, group_name)
-       VALUES ($1, $2, $3, 'bot', $4, $5) RETURNING *`,
-      [name, phone, 'WhatsApp', userId, groupName]
+      `INSERT INTO conversations (name, phone, tag, status, user_id, owner_jid, group_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [name, phone, 'WhatsApp', 'bot', userId, ownerJid, groupName]
     );
 
     return mapConversationRow(rows[0]);
   }
 
-  /**
-   * Crea o actualiza una conversación a partir de la sincronización rápida de Baileys (evento
-   * 'messaging-history.set', ver WhatsappService) — trae contactos reales de WhatsApp aunque
-   * todavía no le hayan escrito al bot, con su nombre y fecha de actividad reales. Nunca
-   * retrocede `last_message_at` (GREATEST) para no pisar una interacción real más reciente que
-   * ya hayamos registrado por otra vía.
-   */
   static async upsertFromSync(userId: number, phone: string, name: string, lastMessageAt: Date): Promise<void> {
-    const existing = await db.query('SELECT id FROM conversations WHERE phone = $1 AND user_id = $2', [phone, userId]);
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const existing = await db.query(
+      'SELECT id FROM conversations WHERE phone = $1 AND user_id = $2 AND owner_jid = $3', 
+      [phone, userId, ownerJid]
+    );
     if (existing.rows.length > 0) {
       await db.query(
         `UPDATE conversations SET name = $1, last_message_at = GREATEST(last_message_at, $2) WHERE id = $3`,
@@ -276,39 +272,28 @@ export class ConversationService {
       );
     } else {
       await db.query(
-        `INSERT INTO conversations (name, phone, tag, status, user_id, last_message_at)
-         VALUES ($1, $2, 'WhatsApp', 'bot', $3, $4)`,
-        [name, phone, userId, lastMessageAt]
+        `INSERT INTO conversations (name, phone, tag, status, user_id, owner_jid, last_message_at)
+         VALUES ($1, $2, 'WhatsApp', 'bot', $3, $4, $5)`,
+        [name, phone, userId, ownerJid, lastMessageAt]
       );
     }
   }
 
-  /**
-   * Actualiza el nombre mostrado de un contacto cuando Baileys sincroniza su nombre real
-   * guardado en la agenda del teléfono (distinto del "pushName" con el que se creó la
-   * conversación — ver WhatsappService, evento 'contacts.upsert'). `jidLocal` es la parte antes
-   * de "@" del JID de esa persona; matchea tanto chats individuales (phone = jidLocal) como
-   * participantes de grupo (phone = "grupoJidLocal-jidLocal"). Para participantes de grupo
-   * reconstruye el sufijo "· NombreDelGrupo" a partir de group_name en vez de pisarlo.
-   */
   static async updateNameIfKnown(jidLocal: string, userId: number, savedName: string): Promise<void> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
     await db.query(
       `UPDATE conversations
-       SET name = CASE WHEN group_name IS NOT NULL THEN $1 || ' · ' || group_name ELSE $1 END
-       WHERE user_id = $2 AND (phone = $3 OR phone LIKE '%-' || $3)`,
-      [savedName, userId, jidLocal]
+       SET name = CASE WHEN group_name IS NOT NULL THEN $1 || ' - ' || group_name ELSE $1 END
+       WHERE user_id = $2 AND owner_jid = $4 AND (phone = $3 OR phone LIKE '%-' || $3)`,
+      [savedName, userId, jidLocal, ownerJid]
     );
   }
 
-  /**
-   * Todas las conversaciones (una por participante) que pertenecen al mismo grupo real de
-   * WhatsApp, para el usuario dado. Usado por AiSummaryModal en el panel: en vez de leer la
-   * pantalla para adivinar quién escribió qué, resume con los datos reales guardados acá.
-   */
   static async listByGroupName(groupName: string, userId: number): Promise<Conversation[]> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
     const { rows } = await db.query(
-      'SELECT * FROM conversations WHERE group_name = $1 AND user_id = $2 ORDER BY name ASC',
-      [groupName, userId]
+      'SELECT * FROM conversations WHERE group_name = $1 AND user_id = $2 AND owner_jid = $3 ORDER BY name ASC',
+      [groupName, userId, ownerJid]
     );
     return rows.map(mapConversationRow);
   }
