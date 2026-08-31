@@ -4,6 +4,9 @@ import { authMiddleware } from '../middleware/auth.middleware.js';
 
 const router = Router();
 
+// Proteger todas las rutas de este router para que se inyecte req.user
+router.use(authMiddleware);
+
 // Listar mensajes programados (opcionalmente filtrados por usuario autenticado)
 router.get('/', async (req: Request, res: Response) => {
   try {
