@@ -96,6 +96,7 @@ async function sendWithRetry(
   content: Parameters<WASocket['sendMessage']>[1],
   maxRetries = 2
 ): Promise<void> {
+  console.log(`\n>>> [WhatsApp OUT] Enviando mensaje a ${jid}:`, JSON.stringify(content));
   for (let attempt = 0; ; attempt++) {
     try {
       await socket.sendMessage(jid, content);
@@ -424,6 +425,7 @@ return connectPromise;
   private static async handleIncomingMessage(userId: number, socket: WASocket, msg: any): Promise<void> {
     const remoteJid: string | undefined = msg.key?.remoteJid;
     if (!remoteJid) return;
+    console.log(`\n<<< [WhatsApp IN] Mensaje recibido de ${remoteJid}:`, msg.message?.conversation || msg.message?.extendedTextMessage?.text || '[Audio/Media/Otro]');
     // Canales de WhatsApp (Newsletters, @newsletter) y difusiones de estado (@broadcast) no son
     // contactos reales de dos vías — sin este filtro, un canal al que estás suscripto se cuela acá
     // como si fuera un chat individual, con el número interno del canal como "nombre" (confirmado:

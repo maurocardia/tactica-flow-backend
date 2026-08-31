@@ -283,12 +283,14 @@ export class KnowledgeBaseService {
       'menos', 'algo', 'nada', 'todo', 'tambien', 'tampoco', 'si', 'no', 'casi', 'aviso', 'avisame', 'minutos'
     ]);
 
-    // Limpiar URLs y caracteres extraños antes de extraer palabras clave
+    // Limpiar URLs, normalizar acentos y quitar caracteres extraños antes de extraer palabras clave
     const extractKeywords = (text: string): string[] =>
       text
         .replace(/https?:\/\/\S+/gi, ' ')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
         .toLowerCase()
-        .replace(/[^\w\sáéíóúüñ]/gi, ' ')
+        .replace(/[^\w\s]/gi, ' ')
         .split(/\s+/)
         .filter((w) => w.length >= 3 && !STOPWORDS.has(w))
         .map((w) => (w.endsWith('s') ? w.slice(0, -1) : w));
@@ -336,7 +338,8 @@ export class KnowledgeBaseService {
       if (current.trim()) docChunks.push(current.trim());
 
       for (const chunkText of docChunks) {
-        chunks.push({ baseTitle: row.base_title, filename: row.filename, text: chunkText, textLower: chunkText.toLowerCase(), score: 0 });
+        const textLower = chunkText.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+        chunks.push({ baseTitle: row.base_title, filename: row.filename, text: chunkText, textLower, score: 0 });
       }
     }
 

@@ -46,11 +46,16 @@ export class BotEngineService {
             const active = await KnowledgeBaseService.getActiveContext(incomingText, historyText);
             knowledgeContext = active.context;
             sourceKbIds = active.baseIds;
+            console.log(`\n=== [BOT ENGINE LOG - REGLA CALL_AI] ===`);
+            console.log(`Mensaje Entrante: "${incomingText}"`);
+            console.log(`Contexto extraído de la Base de Conocimiento (${sourceKbIds.length > 0 ? 'Sí' : 'No'} relevante):\n`, knowledgeContext ? knowledgeContext.substring(0, 500) + '...' : 'Ninguno');
           } catch (err) {
-            console.error('⚠️ [BOT ENGINE] No se pudo obtener el contexto de KB:', err);
+            console.error('❌ [BOT ENGINE] No se pudo obtener el contexto de KB:', err);
           }
           const customPrompt = `${customInstructions}\nInstrucción de este bloque: ${rule.replyText}`;
           const aiReply = await AIService.processMessage(incomingText, conversationHistory, tacticaCredentials, knowledgeContext, customPrompt);
+          console.log(`Respuesta de la IA:\n${aiReply}`);
+          console.log(`========================\n`);
           return {
             replyText: aiReply,
             source: 'AI_AGENT',
@@ -95,11 +100,17 @@ export class BotEngineService {
       const active = await KnowledgeBaseService.getActiveContext(incomingText, historyText);
       knowledgeContext = active.context;
       sourceKbIds = active.baseIds;
+      console.log(`\n=== [BOT ENGINE LOG] ===`);
+      console.log(`Mensaje Entrante: "${incomingText}"`);
+      console.log(`Contexto extraído de la Base de Conocimiento (${sourceKbIds.length > 0 ? 'Sí' : 'No'} relevante):\n`, knowledgeContext ? knowledgeContext.substring(0, 500) + '...' : 'Ninguno');
     } catch (err) {
-      console.error('⚠️ [BOT ENGINE] No se pudo obtener el contexto de la Base de Conocimiento:', err);
+      console.error('❌ [BOT ENGINE] No se pudo obtener el contexto de la Base de Conocimiento:', err);
     }
 
     const aiReply = await AIService.processMessage(incomingText, conversationHistory, tacticaCredentials, knowledgeContext, customInstructions);
+
+    console.log(`Respuesta de la IA:\n${aiReply}`);
+    console.log(`========================\n`);
 
     return {
       replyText: aiReply,
