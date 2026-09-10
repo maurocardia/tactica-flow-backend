@@ -2,6 +2,8 @@
 
 Backend modular para la plataforma **Tactica Flow**, diseñado para gestionar sesiones de WhatsApp, chat multiagente, agentes de IA conversacional y la integración directa con **Táctica ERP**.
 
+🔗 **Tablero Oficial en GitHub Projects**: [https://github.com/users/maurocardia/projects/4/views/1](https://github.com/users/maurocardia/projects/4/views/1)
+
 ---
 
 ## 🛠️ Requisitos Previos
