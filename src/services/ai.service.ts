@@ -55,7 +55,7 @@ const anthropic = createAnthropic({
 const DEFAULT_MODEL_BY_PROVIDER: Record<AiProviderName, string> = {
   google: getSanitizedModelName(),
   openai: sanitizeEnvValue(process.env.OPENAI_MODEL) || 'gpt-4o-mini',
-  anthropic: sanitizeEnvValue(process.env.ANTHROPIC_MODEL) || 'claude-3-5-haiku-latest'
+  anthropic: sanitizeEnvValue(process.env.ANTHROPIC_MODEL) || 'claude-haiku-4-5-20251001'
 };
 
 const PROVIDER_LABEL: Record<AiProviderName, string> = {
