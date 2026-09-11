@@ -556,7 +556,9 @@ return connectPromise;
       history,
       {},
       user.aiFallbackEnabled,
-      user.aiCustomInstructions
+      user.aiCustomInstructions,
+      user.aiProvider,
+      user.aiModel
     );
     if (!botResult) return;
 
