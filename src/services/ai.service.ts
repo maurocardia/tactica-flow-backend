@@ -26,6 +26,12 @@ function getSanitizedApiKey(): string {
   return sanitizeEnvValue(process.env.GEMINI_API_KEY);
 }
 
+// Modelos que Google discontinuó (confirmado con llamadas reales — ver git history de este
+// archivo). users.ai_model tiene DEFAULT 'gemini-2.0-flash' desde antes de que esta columna se
+// leyera de verdad, así que cualquier usuario que nunca haya tocado su preferencia todavía
+// arrastra ese valor — sin este filtro, resolveModel() lo pasaría tal cual y el bot les rompería.
+const DEPRECATED_GOOGLE_MODELS = new Set(['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']);
+
 function getSanitizedModelName(): string {
   let model = sanitizeEnvValue(process.env.GEMINI_MODEL) || 'gemini-3.1-flash-lite';
   if (!model.startsWith('gemini-')) {
@@ -90,7 +96,11 @@ function resolveModel(providerInput: string | undefined, modelInput: string | un
     provider = 'google';
   }
 
-  const modelName = sanitizeEnvValue(modelInput) || DEFAULT_MODEL_BY_PROVIDER[provider];
+  let modelName = sanitizeEnvValue(modelInput) || DEFAULT_MODEL_BY_PROVIDER[provider];
+  if (provider === 'google' && DEPRECATED_GOOGLE_MODELS.has(modelName)) {
+    console.warn(`⚠️ [AIService] "${modelName}" fue discontinuado por Google — usando ${DEFAULT_MODEL_BY_PROVIDER.google} en su lugar.`);
+    modelName = DEFAULT_MODEL_BY_PROVIDER.google;
+  }
   const hasKey = hasApiKeyFor(provider);
 
   let model;
