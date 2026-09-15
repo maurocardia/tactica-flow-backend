@@ -144,6 +144,13 @@ const SCHEMA_SQL = `
   -- default: no cambia el comportamiento de nadie que no lo configure.
   ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_custom_instructions TEXT NOT NULL DEFAULT '';
 
+  -- Desglose estructurado del prompt del Agente IA (apartados de texto libre + switches de
+  -- "Reglas generales", ver AiAgentConfigModal.tsx) — se guarda tal cual para que el modal pueda
+  -- reabrirse sin perder qué switches estaban prendidos. ai_custom_instructions sigue siendo lo
+  -- que de verdad lee el bot en tiempo real (whatsapp.service.ts); esta columna es solo para que
+  -- la UI recuerde cómo se armó ese texto. NULL = nunca se guardó desde el formulario nuevo.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_prompt_config JSONB;
+
   -- Mensajes Programados y Tareas Automatizadas (Feature #5)
   CREATE TABLE IF NOT EXISTS scheduled_jobs (
     id SERIAL PRIMARY KEY,

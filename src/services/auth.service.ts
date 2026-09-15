@@ -105,7 +105,7 @@ function mapUserRow(row: any): User {
     botEnabled: row.bot_enabled,
     aiFallbackEnabled: row.ai_fallback_enabled,
     aiCustomInstructions: row.ai_custom_instructions,
-    aiPromptConfig: row.ai_prompt_config || null,
+    aiPromptConfig: row.ai_prompt_config ?? null,
     botEnabledForNewContacts: row.bot_enabled_for_new_contacts,
     botReplyToAll: row.bot_reply_to_all,
     createdAt: new Date(row.created_at).toISOString(),
@@ -240,6 +240,9 @@ export class AuthService {
     return lines.join('\n');
   }
 
+  // Guarda la config estructurada del Agente IA (apartados + Reglas generales) Y el texto final
+  // compuesto en la misma operación — así el prompt que de verdad usa el bot (ai_custom_instructions)
+  // nunca queda desincronizado de lo que el usuario ve/edita en el modal.
   static async setAiPromptConfig(
     id: number,
     config: AiPromptConfig

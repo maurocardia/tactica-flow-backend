@@ -18,7 +18,8 @@ export class BotEngineService {
     aiFallbackEnabled: boolean = true,
     customInstructions: string = '',
     aiProvider: string = 'google',
-    aiModel: string = ''
+    aiModel: string = '',
+    contactName: string = 'Cliente'
   ): Promise<{ replyText: string; source: 'KEYWORD_RULE' | 'AI_AGENT' | 'TACTICA_API' | 'FLOW_ENGINE'; sourceKbIds: number[] } | null> {
     const textLower = incomingText.trim().toLowerCase();
 
@@ -29,7 +30,7 @@ export class BotEngineService {
       .join(' ');
 
     // 1. Evaluar Flujo Visual (Con Estado)
-    const flowResult = await FlowEngineService.processMessage(incomingText, customerPhoneNumber);
+    const flowResult = await FlowEngineService.processMessage(incomingText, customerPhoneNumber, contactName);
     if (flowResult) {
       console.log(`🤖 [BOT ENGINE] Mensaje procesado por FlowEngine (estado guardado).`);
       return flowResult;
