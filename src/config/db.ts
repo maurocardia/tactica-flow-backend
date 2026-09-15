@@ -195,12 +195,11 @@ const SCHEMA_SQL = `
   UPDATE users SET ai_model = 'gemini-3.1-flash-lite' WHERE ai_model = 'gemini-2.0-flash';
 
   -- Agente de IA Modular (Issue #21/#25 [EPIC #10]): reemplaza el textarea único de
-  -- ai_custom_instructions por bloques estructurados (nombre del bot, comportamiento, objetivo
-  -- principal, reglas absolutas, tono/acento, info de la empresa, llamado a la acción) — ver
-  -- AiBotProfile en ai.service.ts. '{}' por default: un perfil vacío hace que el ensamblador
-  -- del prompt caiga al comportamiento viejo (ai_custom_instructions) hasta que el usuario
-  -- configure el nuevo modal, para no romperle el bot a nadie que ya lo tenía andando.
-  ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_bot_profile JSONB NOT NULL DEFAULT '{}'::jsonb;
+  -- ai_custom_instructions por apartados estructurados (comportamiento, objetivo, reglas, tono,
+  -- info de la empresa, CTA, notas) + switches de "Reglas generales" — ver AiPromptConfig y
+  -- AuthService.composeAiPrompt en auth.service.ts. NULL = cuenta vieja que nunca guardó desde
+  -- el formulario nuevo, sigue leyendo el ai_custom_instructions de siempre hasta que lo haga.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_prompt_config JSONB;
 
   -- Qué bases de conocimiento estaban activas cuando se generó cada respuesta del bot (vacío
   -- para mensajes del cliente, respuestas por regla fija, o respuestas de IA sin ninguna base

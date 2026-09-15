@@ -246,9 +246,7 @@ router.post('/conversations/:id/messages', async (req: Request, res: Response) =
         aiFallbackEnabled,
         owner?.aiCustomInstructions ?? '',
         owner?.aiProvider ?? 'google',
-        owner?.aiModel ?? '',
-        owner?.aiBotProfile ?? {},
-        conversation.name
+        owner?.aiModel ?? ''
       );
 
       const botReplyResult = botResult

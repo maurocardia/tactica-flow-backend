@@ -3,7 +3,6 @@ import { TacticaCredentials } from './tacticaApi.service.js';
 import { KeywordRuleService } from './keywordRule.service.js';
 import { KnowledgeBaseService } from './knowledgeBase.service.js';
 import { FlowEngineService } from './flowEngine.service.js';
-import { AiBotProfile } from './auth.service.js';
 
 export type { KeywordRule } from './keywordRule.service.js';
 
@@ -19,9 +18,7 @@ export class BotEngineService {
     aiFallbackEnabled: boolean = true,
     customInstructions: string = '',
     aiProvider: string = 'google',
-    aiModel: string = '',
-    aiBotProfile: AiBotProfile = {},
-    contactName: string = ''
+    aiModel: string = ''
   ): Promise<{ replyText: string; source: 'KEYWORD_RULE' | 'AI_AGENT' | 'TACTICA_API' | 'FLOW_ENGINE'; sourceKbIds: number[] } | null> {
     const textLower = incomingText.trim().toLowerCase();
 
@@ -55,7 +52,7 @@ export class BotEngineService {
             console.error('❌ [BOT ENGINE] No se pudo obtener el contexto de KB:', err);
           }
           const customPrompt = `${customInstructions}\nInstrucción de este bloque: ${rule.replyText}`;
-          const aiReply = await AIService.processMessage(incomingText, conversationHistory, tacticaCredentials, knowledgeContext, customPrompt, 'bot', aiProvider, aiModel, aiBotProfile, contactName);
+          const aiReply = await AIService.processMessage(incomingText, conversationHistory, tacticaCredentials, knowledgeContext, customPrompt, 'bot', aiProvider, aiModel);
           return {
             replyText: aiReply,
             source: 'AI_AGENT',
@@ -104,7 +101,7 @@ export class BotEngineService {
       console.error('❌ [BOT ENGINE] No se pudo obtener el contexto de la Base de Conocimiento:', err);
     }
 
-    const aiReply = await AIService.processMessage(incomingText, conversationHistory, tacticaCredentials, knowledgeContext, customInstructions, 'bot', aiProvider, aiModel, aiBotProfile, contactName);
+    const aiReply = await AIService.processMessage(incomingText, conversationHistory, tacticaCredentials, knowledgeContext, customInstructions, 'bot', aiProvider, aiModel);
 
     return {
       replyText: aiReply,

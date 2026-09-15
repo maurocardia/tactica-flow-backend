@@ -478,10 +478,6 @@ return connectPromise;
     // Preferimos el nombre real guardado en la agenda (si Baileys ya lo sincronizó) por sobre el
     // "pushName" que la propia persona se puso en WhatsApp — ver savedContactNames arriba.
     let contactName: string = getSavedContactName(userId, senderJid) || msg.pushName || (senderJid || remoteJid).split('@')[0];
-    // Nombre "puro" de la persona (sin el " · Nombre del Grupo" que se le agrega abajo para
-    // mostrar en el panel) — este es el que se sustituye en {nombre}/{contacto} del perfil
-    // modular del agente, ver AIService.buildModularPromptBlock.
-    const contactFirstName = contactName;
     let phone: string;
     let groupName: string | null = null;
 
@@ -562,9 +558,7 @@ return connectPromise;
       user.aiFallbackEnabled,
       user.aiCustomInstructions,
       user.aiProvider,
-      user.aiModel,
-      user.aiBotProfile,
-      contactFirstName
+      user.aiModel
     );
     if (!botResult) return;
 
