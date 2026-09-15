@@ -54,8 +54,7 @@ const SECTION_LABELS: { key: keyof AiPromptSections; label: string }[] = [
 
 const LANGUAGE_NAME: Record<string, string> = { es: 'español', 'pt-BR': 'portugués de Brasil', en: 'inglés' };
 
-const GENERAL_RULE_TEXT: Record<Exclude<keyof AiGeneralRules, 'mainLanguage'>, string> = {
-  followClientLanguage: 'Si el cliente escribe en otro idioma, respondé en ese idioma en vez del idioma principal configurado.',
+const GENERAL_RULE_TEXT: Record<Exclude<keyof AiGeneralRules, 'mainLanguage' | 'followClientLanguage'>, string> = {
   noSwearing: 'No uses groserías ni lenguaje ofensivo bajo ninguna circunstancia.',
   neverInvent: 'Nunca inventes información (precios, stock, plazos, políticas) que no tengas confirmada.',
   shortAnswers: 'Mantené las respuestas cortas y directas, evitando párrafos largos.',
@@ -249,7 +248,12 @@ export class AuthService {
     const { generalRules } = config;
     const ruleLines: string[] = [];
     if (generalRules.mainLanguage) {
-      ruleLines.push(`Idioma: ${LANGUAGE_NAME[generalRules.mainLanguage] || generalRules.mainLanguage}.`);
+      const langName = LANGUAGE_NAME[generalRules.mainLanguage] || generalRules.mainLanguage;
+      if (generalRules.followClientLanguage) {
+        ruleLines.push(`Idioma principal: ${langName} (pero si el cliente te escribe en otro idioma diferente, debes responder en el idioma del cliente).`);
+      } else {
+        ruleLines.push(`Idioma OBLIGATORIO: Debes redactar y responder ABSOLUTAMENTE TODAS tus respuestas en ${langName} (incluso si el cliente te escribe en un idioma diferente).`);
+      }
     }
     for (const key of Object.keys(GENERAL_RULE_TEXT) as (keyof typeof GENERAL_RULE_TEXT)[]) {
       if (generalRules[key]) ruleLines.push(GENERAL_RULE_TEXT[key]);
