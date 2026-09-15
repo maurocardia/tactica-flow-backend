@@ -1,5 +1,7 @@
 import { generateText, tool } from 'ai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createOpenAI } from '@ai-sdk/openai';
+import { createAnthropic } from '@ai-sdk/anthropic';
 import { z } from 'zod';
 import dotenv from 'dotenv';
 import { TacticaApiService, TacticaCredentials } from './tacticaApi.service.js';
@@ -7,23 +9,32 @@ import { AiBotProfile } from './auth.service.js';
 
 dotenv.config();
 
-// --- Config del proveedor de IA -------------------------------------------------------------
-const AI_PROVIDER = process.env.AI_PROVIDER || 'gemini';
+// --- Multi-provider (Issue #8 [EPIC] IA Multi-Provider con Vercel AI SDK) --------------------
+// El proveedor/modelo real a usar es una preferencia POR USUARIO (columnas ai_provider/ai_model
+// en la tabla users, ver auth.service.ts) que quien llama a processMessage debe resolver y pasar
+// acá — este archivo solo sabe instanciar el cliente correcto del Vercel AI SDK para cada uno.
+export type AiProviderName = 'google' | 'openai' | 'anthropic';
 
-function getSanitizedApiKey(): string {
-  let key = process.env.GEMINI_API_KEY || '';
-  if (key.includes('=')) {
-    key = key.split('=').pop() || '';
+function sanitizeEnvValue(raw: string | undefined): string {
+  let value = raw || '';
+  if (value.includes('=')) {
+    value = value.split('=').pop() || '';
   }
-  return key.trim().replace(/^['"]|['"]$/g, '');
+  return value.trim().replace(/^['"]|['"]$/g, '');
 }
 
+function getSanitizedApiKey(): string {
+  return sanitizeEnvValue(process.env.GEMINI_API_KEY);
+}
+
+// Modelos que Google discontinuó (confirmado con llamadas reales — ver git history de este
+// archivo). users.ai_model tiene DEFAULT 'gemini-2.0-flash' desde antes de que esta columna se
+// leyera de verdad, así que cualquier usuario que nunca haya tocado su preferencia todavía
+// arrastra ese valor — sin este filtro, resolveModel() lo pasaría tal cual y el bot les rompería.
+const DEPRECATED_GOOGLE_MODELS = new Set(['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro']);
+
 function getSanitizedModelName(): string {
-  let model = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
-  if (model.includes('=')) {
-    model = model.split('=').pop() || 'gemini-3.1-flash-lite';
-  }
-  model = model.trim().replace(/^['"]|['"]$/g, '');
+  let model = sanitizeEnvValue(process.env.GEMINI_MODEL) || 'gemini-3.1-flash-lite';
   if (!model.startsWith('gemini-')) {
     model = `gemini-${model}`;
   }
@@ -31,11 +42,7 @@ function getSanitizedModelName(): string {
 }
 
 function getSanitizedTranscribeModelName(): string {
-  let model = process.env.GEMINI_TRANSCRIBE_MODEL || process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
-  if (model.includes('=')) {
-    model = model.split('=').pop() || 'gemini-3.1-flash-lite';
-  }
-  model = model.trim().replace(/^['"]|['"]$/g, '');
+  let model = sanitizeEnvValue(process.env.GEMINI_TRANSCRIBE_MODEL) || getSanitizedModelName();
   if (!model.startsWith('gemini-')) {
     model = `gemini-${model}`;
   }
@@ -45,6 +52,71 @@ function getSanitizedTranscribeModelName(): string {
 const google = createGoogleGenerativeAI({
   apiKey: getSanitizedApiKey()
 });
+const openai = createOpenAI({
+  apiKey: sanitizeEnvValue(process.env.OPENAI_API_KEY)
+});
+const anthropic = createAnthropic({
+  apiKey: sanitizeEnvValue(process.env.ANTHROPIC_API_KEY)
+});
+
+const DEFAULT_MODEL_BY_PROVIDER: Record<AiProviderName, string> = {
+  google: getSanitizedModelName(),
+  openai: sanitizeEnvValue(process.env.OPENAI_MODEL) || 'gpt-4o-mini',
+  anthropic: sanitizeEnvValue(process.env.ANTHROPIC_MODEL) || 'claude-haiku-4-5-20251001'
+};
+
+const PROVIDER_LABEL: Record<AiProviderName, string> = {
+  google: 'Gemini (Google)',
+  openai: 'OpenAI',
+  anthropic: 'Anthropic (Claude)'
+};
+
+function normalizeProvider(provider: string | undefined): AiProviderName {
+  const p = (provider || 'google').trim().toLowerCase();
+  if (p === 'openai') return 'openai';
+  if (p === 'anthropic' || p === 'claude') return 'anthropic';
+  return 'google';
+}
+
+function hasApiKeyFor(provider: AiProviderName): boolean {
+  if (provider === 'openai') return !!sanitizeEnvValue(process.env.OPENAI_API_KEY);
+  if (provider === 'anthropic') return !!sanitizeEnvValue(process.env.ANTHROPIC_API_KEY);
+  return !!getSanitizedApiKey();
+}
+
+/**
+ * Instancia el modelo del Vercel AI SDK correspondiente al proveedor pedido (preferencia del
+ * usuario, ver users.ai_provider/ai_model) — con fallback silencioso a Gemini si el proveedor
+ * pedido no tiene API key configurada en el servidor, para no romper el bot de un usuario que
+ * eligió un proveedor que el negocio todavía no activó.
+ */
+function resolveModel(providerInput: string | undefined, modelInput: string | undefined) {
+  let provider = normalizeProvider(providerInput);
+  if (!hasApiKeyFor(provider) && provider !== 'google') {
+    console.warn(`⚠️ [AIService] No hay API key para ${PROVIDER_LABEL[provider]} — usando Gemini como respaldo.`);
+    provider = 'google';
+  }
+
+  let modelName = sanitizeEnvValue(modelInput) || DEFAULT_MODEL_BY_PROVIDER[provider];
+  if (provider === 'google' && DEPRECATED_GOOGLE_MODELS.has(modelName)) {
+    console.warn(`⚠️ [AIService] "${modelName}" fue discontinuado por Google — usando ${DEFAULT_MODEL_BY_PROVIDER.google} en su lugar.`);
+    modelName = DEFAULT_MODEL_BY_PROVIDER.google;
+  }
+  const hasKey = hasApiKeyFor(provider);
+
+  let model;
+  if (provider === 'openai') {
+    model = openai(modelName);
+  } else if (provider === 'anthropic') {
+    model = anthropic(modelName);
+  } else {
+    let googleModel = modelName;
+    if (!googleModel.startsWith('gemini-')) googleModel = `gemini-${googleModel}`;
+    model = google(googleModel);
+  }
+
+  return { model, provider, modelName, providerLabel: PROVIDER_LABEL[provider], hasApiKey: hasKey };
+}
 
 // --- Cola + reintentos para llamadas a Gemini ------------------------------------------------
 // Antes esto era una cola 100% en serie (una sola llamada a la vez): si a un mensaje le tocaba
@@ -119,13 +191,13 @@ async function generateTextWithRetry(
     try {
       return await enqueueGeminiCall(() => generateText({ maxRetries: 2, ...currentParams }));
     } catch (error: any) {
-      console.error(`❌ [AIService] Falló la llamada a Gemini (intento ${attempt + 1}/${maxRetries + 1}) — ${describeError(error)}`, error);
+      console.error(`❌ [AIService] Falló la llamada al proveedor de IA (intento ${attempt + 1}/${maxRetries + 1}) — ${describeError(error)}`, error);
 
       if (attempt < maxRetries && (isTransientError(error) || /quota|rate.?limit/i.test(error?.message || ''))) {
-        // Extraer si Google nos indica el tiempo exacto de espera (ej: "Please retry in 8.26s")
+        // Extraer si el proveedor indica el tiempo exacto de espera (ej: "Please retry in 8.26s")
         const retryMatch = error?.message?.match(/retry in (\d+(\.\d+)?)s/i);
         const delayMs = retryMatch ? Math.ceil(parseFloat(retryMatch[1]) * 1000) + 1200 : 1500 * (attempt + 1);
-        console.warn(`⏳ [AIService] Esperando ${delayMs}ms para reintentar con Gemini...`);
+        console.warn(`⏳ [AIService] Esperando ${delayMs}ms para reintentar...`);
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         continue;
       }
@@ -307,16 +379,15 @@ export class AIService {
     knowledgeContext: string = '',
     customInstructions: string = '',
     mode: 'bot' | 'utility' = 'bot',
+    aiProvider: string = 'google',
+    aiModel: string = '',
     aiBotProfile: AiBotProfile = {},
     contactName: string = ''
   ): Promise<string> {
-    if (AI_PROVIDER !== 'gemini') {
-      console.error(`❌ [AIService] AI_PROVIDER="${AI_PROVIDER}" no está soportado todavía (solo "gemini").`);
-      return 'Lo siento, el proveedor de IA configurado no está disponible. Un asesor te atenderá pronto.';
-    }
+    const { model, providerLabel, hasApiKey } = resolveModel(aiProvider, aiModel);
 
-    if (!process.env.GEMINI_API_KEY) {
-      console.error('❌ [AIService] Falta GEMINI_API_KEY en el .env');
+    if (!hasApiKey) {
+      console.error(`❌ [AIService] Falta la API key de ${providerLabel} en el servidor.`);
       return 'Lo siento, ocurrió un error al procesar tu mensaje. Un asesor te atenderá pronto.';
     }
 
@@ -342,19 +413,26 @@ export class AIService {
 
       const recentHistory = conversationHistory.slice(-8);
 
+      // Las tools de Táctica ERP (function calling multi-paso, ver Issue #8) solo se habilitan
+      // cuando quien llama efectivamente tiene credenciales de Táctica — así un chat sin ERP
+      // conectado no cambia de comportamiento respecto a antes.
+      const hasTacticaCreds = !!(tacticaCredentials.usuario && tacticaCredentials.contrasena);
+
       const result = await generateTextWithRetry({
-        model: google(getSanitizedModelName()),
+        model,
         temperature: 0,
         system,
-        messages: [...recentHistory, { role: 'user', content: userMessage }]
-        // tools de Táctica ERP deshabilitadas por ahora — ver comentario en buildTacticaTools().
+        messages: [...recentHistory, { role: 'user', content: userMessage }],
+        ...(mode === 'bot' && hasTacticaCreds
+          ? { tools: buildTacticaTools(tacticaCredentials), maxSteps: 3 }
+          : {})
       });
 
       return result.text || 'Sin respuesta';
     } catch (error: any) {
       console.error('❌ Error en AIService.processMessage:', error?.message || error);
-      if (!getSanitizedApiKey()) {
-        return 'Disculpas, la clave de IA (GEMINI_API_KEY) no está configurada en el servidor.';
+      if (!hasApiKey) {
+        return `Disculpas, la clave de IA de ${providerLabel} no está configurada en el servidor.`;
       }
       return 'Disculpas, ocurrió un problema temporal con el servicio de inteligencia artificial. En instantes te responderá un asesor.';
     }

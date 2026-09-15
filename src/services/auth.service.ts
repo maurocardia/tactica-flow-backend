@@ -160,6 +160,17 @@ export class AuthService {
     return mapUserRow(rows[0]);
   }
 
+  // Preferencia de proveedor/modelo de IA (Issue #8 [EPIC] IA Multi-Provider) — ver
+  // AIService.resolveModel para cómo se usa esto al llamar a la IA.
+  static async setAiProviderAndModel(id: number, aiProvider: string, aiModel: string): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET ai_provider = $1, ai_model = $2, updated_at = now() WHERE id = $3 RETURNING *`,
+      [aiProvider, aiModel, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
   static async setAiBotProfile(id: number, profile: AiBotProfile): Promise<User | null> {
     const { rows } = await db.query(
       `UPDATE users SET ai_bot_profile = $1, updated_at = now() WHERE id = $2 RETURNING *`,

@@ -18,6 +18,8 @@ export class BotEngineService {
     tacticaCredentials: TacticaCredentials = {},
     aiFallbackEnabled: boolean = true,
     customInstructions: string = '',
+    aiProvider: string = 'google',
+    aiModel: string = '',
     aiBotProfile: AiBotProfile = {},
     contactName: string = ''
   ): Promise<{ replyText: string; source: 'KEYWORD_RULE' | 'AI_AGENT' | 'TACTICA_API' | 'FLOW_ENGINE'; sourceKbIds: number[] } | null> {
@@ -53,7 +55,7 @@ export class BotEngineService {
             console.error('❌ [BOT ENGINE] No se pudo obtener el contexto de KB:', err);
           }
           const customPrompt = `${customInstructions}\nInstrucción de este bloque: ${rule.replyText}`;
-          const aiReply = await AIService.processMessage(incomingText, conversationHistory, tacticaCredentials, knowledgeContext, customPrompt, 'bot', aiBotProfile, contactName);
+          const aiReply = await AIService.processMessage(incomingText, conversationHistory, tacticaCredentials, knowledgeContext, customPrompt, 'bot', aiProvider, aiModel, aiBotProfile, contactName);
           return {
             replyText: aiReply,
             source: 'AI_AGENT',
@@ -88,7 +90,7 @@ export class BotEngineService {
     }
 
     // 2. Si no coincide ninguna palabra clave estática, invocar al Agente Inteligente de IA con Function Calling
-    console.log(`🧠 [BOT ENGINE] Invocando Agente IA (${process.env.AI_PROVIDER || 'gemini'}) con integración Táctica...`);
+    console.log(`🧠 [BOT ENGINE] Invocando Agente IA (${aiProvider}${aiModel ? '/' + aiModel : ''}) con integración Táctica...`);
 
     // Contexto de la Base de Conocimiento activa (Issue #7): si falla la consulta a la DB, no
     // tumbamos el bot — seguimos sin contexto extra en vez de romper la respuesta al cliente.
@@ -102,7 +104,7 @@ export class BotEngineService {
       console.error('❌ [BOT ENGINE] No se pudo obtener el contexto de la Base de Conocimiento:', err);
     }
 
-    const aiReply = await AIService.processMessage(incomingText, conversationHistory, tacticaCredentials, knowledgeContext, customInstructions, 'bot', aiBotProfile, contactName);
+    const aiReply = await AIService.processMessage(incomingText, conversationHistory, tacticaCredentials, knowledgeContext, customInstructions, 'bot', aiProvider, aiModel, aiBotProfile, contactName);
 
     return {
       replyText: aiReply,

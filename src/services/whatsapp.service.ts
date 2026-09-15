@@ -561,6 +561,8 @@ return connectPromise;
       {},
       user.aiFallbackEnabled,
       user.aiCustomInstructions,
+      user.aiProvider,
+      user.aiModel,
       user.aiBotProfile,
       contactFirstName
     );
