@@ -224,13 +224,33 @@ export class AuthService {
   // AIService.processMessage / users.ai_custom_instructions.
   static composeAiPrompt(config: AiPromptConfig): string {
     const lines: string[] = [];
-    for (const { key, label } of SECTION_LABELS) {
-      const value = config.sections[key]?.trim();
-      if (value) lines.push(`${label}: ${value}`);
+    if (config.sections.behavior?.trim()) {
+      lines.push(`Comportamiento del asistente: ${config.sections.behavior.trim()}`);
+    }
+    if (config.sections.tone?.trim()) {
+      lines.push(`Tono de voz, dialecto y estilo (OBLIGATORIO - hablar activamente con los modismos, acento y expresiones de este estilo): ${config.sections.tone.trim()}`);
+    }
+    if (config.sections.objective?.trim()) {
+      lines.push(`Objetivo principal: ${config.sections.objective.trim()}`);
+    }
+    if (config.sections.rules?.trim()) {
+      lines.push(`Reglas absolutas: ${config.sections.rules.trim()}`);
+    }
+    if (config.sections.companyInfo?.trim()) {
+      lines.push(`Información de la empresa: ${config.sections.companyInfo.trim()}`);
+    }
+    if (config.sections.callToAction?.trim()) {
+      lines.push(`Llamado a la acción: ${config.sections.callToAction.trim()}`);
+    }
+    if (config.sections.notes?.trim()) {
+      lines.push(`Notas adicionales: ${config.sections.notes.trim()}`);
     }
 
     const { generalRules } = config;
-    const ruleLines = [`Hablá principalmente en ${LANGUAGE_NAME[generalRules.mainLanguage] || generalRules.mainLanguage}.`];
+    const ruleLines: string[] = [];
+    if (generalRules.mainLanguage) {
+      ruleLines.push(`Idioma: ${LANGUAGE_NAME[generalRules.mainLanguage] || generalRules.mainLanguage}.`);
+    }
     for (const key of Object.keys(GENERAL_RULE_TEXT) as (keyof typeof GENERAL_RULE_TEXT)[]) {
       if (generalRules[key]) ruleLines.push(GENERAL_RULE_TEXT[key]);
     }
