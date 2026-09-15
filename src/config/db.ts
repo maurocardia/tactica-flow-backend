@@ -185,6 +185,14 @@ const SCHEMA_SQL = `
   -- comportamiento a nadie: sigue respetando el switch por contacto como hasta ahora.
   ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_reply_to_all BOOLEAN NOT NULL DEFAULT false;
 
+  -- Agente de IA Modular (Issue #21/#25 [EPIC #10]): reemplaza el textarea único de
+  -- ai_custom_instructions por bloques estructurados (nombre del bot, comportamiento, objetivo
+  -- principal, reglas absolutas, tono/acento, info de la empresa, llamado a la acción) — ver
+  -- AiBotProfile en ai.service.ts. '{}' por default: un perfil vacío hace que el ensamblador
+  -- del prompt caiga al comportamiento viejo (ai_custom_instructions) hasta que el usuario
+  -- configure el nuevo modal, para no romperle el bot a nadie que ya lo tenía andando.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_bot_profile JSONB NOT NULL DEFAULT '{}'::jsonb;
+
   -- Qué bases de conocimiento estaban activas cuando se generó cada respuesta del bot (vacío
   -- para mensajes del cliente, respuestas por regla fija, o respuestas de IA sin ninguna base
   -- activa en ese momento). Sirve para filtrar el historial que se le manda a la IA como

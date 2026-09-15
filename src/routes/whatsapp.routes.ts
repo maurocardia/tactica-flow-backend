@@ -93,6 +93,58 @@ router.put('/ai-custom-instructions', async (req: Request, res: Response) => {
   }
 });
 
+// Agente de IA Modular (Issue #21/#25 [EPIC #10]): bloques estructurados que reemplazan el
+// textarea único de ai-custom-instructions — ver AiBotProfile en auth.service.ts y
+// AIService.buildModularPromptBlock para cómo se ensamblan en el system prompt real.
+const VALID_TONE_ACCENTS = ['rioplatense', 'colombiano', 'neutro'];
+const AI_BOT_PROFILE_MAX_CHARS = 18000;
+const AI_BOT_PROFILE_TEXT_FIELDS = ['botName', 'behavior', 'mainGoal', 'absoluteRules', 'companyInfo', 'callToAction'] as const;
+
+router.get('/ai-bot-profile', async (req: Request, res: Response) => {
+  try {
+    const user = await AuthService.getUserById(req.user!.id);
+    res.json(user?.aiBotProfile ?? {});
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al obtener el perfil del agente de IA' });
+  }
+});
+
+router.put('/ai-bot-profile', async (req: Request, res: Response) => {
+  const body = req.body || {};
+  const profile: Record<string, string> = {};
+
+  let totalChars = 0;
+  for (const field of AI_BOT_PROFILE_TEXT_FIELDS) {
+    const value = body[field];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== 'string') {
+      return res.status(400).json({ error: `El campo "${field}" debe ser una cadena de texto` });
+    }
+    profile[field] = value;
+    totalChars += value.length;
+  }
+
+  if (totalChars > AI_BOT_PROFILE_MAX_CHARS) {
+    return res.status(400).json({
+      error: `El perfil supera el límite de ${AI_BOT_PROFILE_MAX_CHARS.toLocaleString('es-AR')} caracteres entre todos los campos (tiene ${totalChars.toLocaleString('es-AR')}).`
+    });
+  }
+
+  if (body.toneAndAccent !== undefined) {
+    if (!VALID_TONE_ACCENTS.includes(body.toneAndAccent)) {
+      return res.status(400).json({ error: `El campo "toneAndAccent" debe ser uno de: ${VALID_TONE_ACCENTS.join(', ')}` });
+    }
+    profile.toneAndAccent = body.toneAndAccent;
+  }
+
+  try {
+    const user = await AuthService.setAiBotProfile(req.user!.id, profile);
+    res.json(user?.aiBotProfile ?? profile);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar el perfil del agente de IA' });
+  }
+});
+
 // Enciende/apaga que un contacto NUEVO (que escribe por primera vez, todavía no está en
 // bot_contacts) arranque con el switch de bot ya prendido en vez de apagado por default — ver
 // WhatsappService.handleIncomingMessage / BotContactService.upsert.

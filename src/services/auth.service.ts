@@ -9,6 +9,20 @@ export interface GoogleTokenPayload {
   picture?: string;
 }
 
+// Agente de IA Modular (Issue #21/#25 [EPIC #10]): reemplaza el textarea único de
+// ai_custom_instructions por bloques estructurados — ver AIService.buildModularPromptBlock
+// para cómo se ensamblan en el system prompt real. Todos los campos son opcionales: un perfil a
+// medio llenar simplemente omite esos bloques del prompt en vez de romper nada.
+export interface AiBotProfile {
+  botName?: string;
+  behavior?: string;
+  mainGoal?: string;
+  absoluteRules?: string;
+  toneAndAccent?: 'rioplatense' | 'colombiano' | 'neutro';
+  companyInfo?: string;
+  callToAction?: string;
+}
+
 export interface User {
   id: number;
   googleId: string;
@@ -22,6 +36,7 @@ export interface User {
   botEnabled: boolean;
   aiFallbackEnabled: boolean;
   aiCustomInstructions: string;
+  aiBotProfile: AiBotProfile;
   botEnabledForNewContacts: boolean;
   botReplyToAll: boolean;
   createdAt: string;
@@ -42,6 +57,7 @@ function mapUserRow(row: any): User {
     botEnabled: row.bot_enabled,
     aiFallbackEnabled: row.ai_fallback_enabled,
     aiCustomInstructions: row.ai_custom_instructions,
+    aiBotProfile: row.ai_bot_profile || {},
     botEnabledForNewContacts: row.bot_enabled_for_new_contacts,
     botReplyToAll: row.bot_reply_to_all,
     createdAt: new Date(row.created_at).toISOString(),
@@ -139,6 +155,15 @@ export class AuthService {
     const { rows } = await db.query(
       `UPDATE users SET bot_reply_to_all = $1, updated_at = now() WHERE id = $2 RETURNING *`,
       [enabled, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setAiBotProfile(id: number, profile: AiBotProfile): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET ai_bot_profile = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [JSON.stringify(profile), id]
     );
     if (rows.length === 0) return null;
     return mapUserRow(rows[0]);
