@@ -185,6 +185,15 @@ const SCHEMA_SQL = `
   -- comportamiento a nadie: sigue respetando el switch por contacto como hasta ahora.
   ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_reply_to_all BOOLEAN NOT NULL DEFAULT false;
 
+  -- users.ai_model traía DEFAULT 'gemini-2.0-flash' desde que se creó la tabla, pero nadie leía
+  -- esa columna todavía (el proveedor/modelo estaban hardcodeados en ai.service.ts) — quedó ahí
+  -- sin que nadie lo notara. Ahora que Issue #8 [EPIC] IA Multi-Provider sí la lee de verdad,
+  -- cualquier usuario que nunca haya tocado esta preferencia todavía arrastra ese modelo
+  -- discontinuado por Google. Se corrige el default para nuevos usuarios y se migran los que ya
+  -- tenían el valor viejo (ai.service.ts también filtra este caso puntual como defensa extra).
+  ALTER TABLE users ALTER COLUMN ai_model SET DEFAULT 'gemini-3.1-flash-lite';
+  UPDATE users SET ai_model = 'gemini-3.1-flash-lite' WHERE ai_model = 'gemini-2.0-flash';
+
   -- Qué bases de conocimiento estaban activas cuando se generó cada respuesta del bot (vacío
   -- para mensajes del cliente, respuestas por regla fija, o respuestas de IA sin ninguna base
   -- activa en ese momento). Sirve para filtrar el historial que se le manda a la IA como
