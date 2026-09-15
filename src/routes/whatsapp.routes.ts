@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { WhatsappService } from '../services/whatsapp.service.js';
-import { AuthService } from '../services/auth.service.js';
+import { AuthService, AiPromptSections, AiGeneralRules } from '../services/auth.service.js';
 import { BotContactService } from '../services/botContact.service.js';
 import { authMiddleware } from '../middleware/auth.middleware.js';
 
@@ -90,6 +90,77 @@ router.put('/ai-custom-instructions', async (req: Request, res: Response) => {
     res.json({ aiCustomInstructions: user?.aiCustomInstructions ?? instructions });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al actualizar las instrucciones de comportamiento' });
+  }
+});
+
+// Agente de IA Modular (Issue #21/#25 [EPIC #10]): apartados de texto libre + switches de
+// "Reglas generales" que reemplazan el textarea único de ai-custom-instructions en el formulario
+// nuevo (ver AiAgentConfigModal.tsx en el frontend). El backend compone el texto final y lo
+// guarda en ai_custom_instructions en la misma operación — ver AuthService.setAiPromptConfig.
+const AI_PROMPT_SECTION_FIELDS = ['behavior', 'objective', 'rules', 'tone', 'companyInfo', 'callToAction', 'notes'] as const;
+const AI_PROMPT_MAX_CHARS = 18000;
+const AI_GENERAL_RULE_TOGGLES = [
+  'followClientLanguage', 'noSwearing', 'neverInvent', 'shortAnswers', 'focusOnCompany',
+  'addressByFirstName', 'noSpecialCharacters', 'noEmojis', 'offerHumanAgent', 'protectSensitiveData'
+] as const;
+const VALID_LANGUAGES = ['es', 'pt-BR', 'en'];
+const DEFAULT_GENERAL_RULES: AiGeneralRules = {
+  mainLanguage: 'es',
+  followClientLanguage: true,
+  noSwearing: true,
+  neverInvent: true,
+  shortAnswers: true,
+  focusOnCompany: true,
+  addressByFirstName: true,
+  noSpecialCharacters: true,
+  noEmojis: false,
+  offerHumanAgent: true,
+  protectSensitiveData: true
+};
+
+router.put('/ai-prompt-config', async (req: Request, res: Response) => {
+  const body = req.body || {};
+  const sectionsInput = body.sections || {};
+  const rulesInput = body.generalRules || {};
+
+  const sections: AiPromptSections = { behavior: '', objective: '', rules: '', tone: '', companyInfo: '', callToAction: '', notes: '' };
+  let totalChars = 0;
+  for (const field of AI_PROMPT_SECTION_FIELDS) {
+    const value = sectionsInput[field];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== 'string') {
+      return res.status(400).json({ error: `El campo "sections.${field}" debe ser una cadena de texto` });
+    }
+    sections[field] = value;
+    totalChars += value.length;
+  }
+
+  if (totalChars > AI_PROMPT_MAX_CHARS) {
+    return res.status(400).json({
+      error: `Los apartados superan el límite de ${AI_PROMPT_MAX_CHARS.toLocaleString('es-AR')} caracteres entre todos los campos (tiene ${totalChars.toLocaleString('es-AR')}).`
+    });
+  }
+
+  const mainLanguage = rulesInput.mainLanguage;
+  if (mainLanguage !== undefined && !VALID_LANGUAGES.includes(mainLanguage)) {
+    return res.status(400).json({ error: `El campo "generalRules.mainLanguage" debe ser uno de: ${VALID_LANGUAGES.join(', ')}` });
+  }
+
+  const generalRules: AiGeneralRules = { ...DEFAULT_GENERAL_RULES, mainLanguage: mainLanguage ?? DEFAULT_GENERAL_RULES.mainLanguage };
+  for (const key of AI_GENERAL_RULE_TOGGLES) {
+    const value = rulesInput[key];
+    if (value === undefined) continue;
+    if (typeof value !== 'boolean') {
+      return res.status(400).json({ error: `El campo "generalRules.${key}" debe ser booleano` });
+    }
+    generalRules[key] = value;
+  }
+
+  try {
+    const result = await AuthService.setAiPromptConfig(req.user!.id, { sections, generalRules });
+    res.json(result ?? { aiPromptConfig: { sections, generalRules }, aiCustomInstructions: AuthService.composeAiPrompt({ sections, generalRules }) });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar la configuración del agente de IA' });
   }
 });
 

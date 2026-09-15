@@ -194,6 +194,13 @@ const SCHEMA_SQL = `
   ALTER TABLE users ALTER COLUMN ai_model SET DEFAULT 'gemini-3.1-flash-lite';
   UPDATE users SET ai_model = 'gemini-3.1-flash-lite' WHERE ai_model = 'gemini-2.0-flash';
 
+  -- Agente de IA Modular (Issue #21/#25 [EPIC #10]): reemplaza el textarea único de
+  -- ai_custom_instructions por apartados estructurados (comportamiento, objetivo, reglas, tono,
+  -- info de la empresa, CTA, notas) + switches de "Reglas generales" — ver AiPromptConfig y
+  -- AuthService.composeAiPrompt en auth.service.ts. NULL = cuenta vieja que nunca guardó desde
+  -- el formulario nuevo, sigue leyendo el ai_custom_instructions de siempre hasta que lo haga.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_prompt_config JSONB;
+
   -- Qué bases de conocimiento estaban activas cuando se generó cada respuesta del bot (vacío
   -- para mensajes del cliente, respuestas por regla fija, o respuestas de IA sin ninguna base
   -- activa en ese momento). Sirve para filtrar el historial que se le manda a la IA como
