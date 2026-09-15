@@ -93,6 +93,24 @@ router.put('/ai-custom-instructions', async (req: Request, res: Response) => {
   }
 });
 
+// Config estructurada del Agente IA (apartados de texto libre + switches de "Reglas generales",
+// ver AiAgentConfigModal.tsx) — guarda tal cual (para que el modal recuerde qué switches estaban
+// prendidos) Y el texto final compuesto en ai_custom_instructions (lo que de verdad lee el bot),
+// en la misma operación (ver AuthService.setAiPromptConfig).
+router.put('/ai-prompt-config', async (req: Request, res: Response) => {
+  const { sections, generalRules } = req.body;
+  if (!sections || typeof sections !== 'object' || !generalRules || typeof generalRules !== 'object') {
+    return res.status(400).json({ error: 'Los campos "sections" y "generalRules" son requeridos' });
+  }
+
+  try {
+    const user = await AuthService.setAiPromptConfig(req.user!.id, { sections, generalRules });
+    res.json({ aiPromptConfig: user?.aiPromptConfig ?? null, aiCustomInstructions: user?.aiCustomInstructions ?? '' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al guardar la configuración del Agente IA' });
+  }
+});
+
 // Enciende/apaga que un contacto NUEVO (que escribe por primera vez, todavía no está en
 // bot_contacts) arranque con el switch de bot ya prendido en vez de apagado por default — ver
 // WhatsappService.handleIncomingMessage / BotContactService.upsert.

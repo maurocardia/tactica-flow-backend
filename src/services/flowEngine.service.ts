@@ -67,7 +67,14 @@ export class FlowEngineService {
     return { text, action, endNodeId };
   }
 
-  static async processMessage(incomingText: string, customerPhoneNumber: string): Promise<FlowResponse | null> {
+  // Reemplaza las variables que el usuario puede insertar en el texto de un nodo (ver
+  // NodeConfigDrawer.tsx, botón "{nombre}") por su valor real — sin esto, el mensaje le llegaba
+  // al cliente con el literal "{nombre}" en vez de su nombre.
+  static applyVariables(text: string, contactName: string): string {
+    return text.replace(/\{nombre\}/gi, contactName);
+  }
+
+  static async processMessage(incomingText: string, customerPhoneNumber: string, contactName: string = 'Cliente'): Promise<FlowResponse | null> {
     const flowData = await this.getFlowData();
     if (!flowData || !Array.isArray(flowData.nodes) || !Array.isArray(flowData.connections)) {
       return null;
@@ -108,7 +115,7 @@ export class FlowEngineService {
               const { text, action, endNodeId } = this.buildNodeChainResponse(conn.targetNodeId, flowData);
               userStates.set(customerPhoneNumber, { nodeId: endNodeId, timestamp: Date.now() });
               return {
-                replyText: text,
+                replyText: this.applyVariables(text, contactName),
                 source: 'FLOW_ENGINE',
                 sourceKbIds: [],
                 action
@@ -135,7 +142,7 @@ export class FlowEngineService {
           const { text, action, endNodeId } = this.buildNodeChainResponse(node.id, flowData);
           userStates.set(customerPhoneNumber, { nodeId: endNodeId, timestamp: Date.now() });
           return {
-            replyText: text,
+            replyText: this.applyVariables(text, contactName),
             source: 'FLOW_ENGINE',
             sourceKbIds: [],
             action

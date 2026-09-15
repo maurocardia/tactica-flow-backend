@@ -478,6 +478,10 @@ return connectPromise;
     // Preferimos el nombre real guardado en la agenda (si Baileys ya lo sincronizó) por sobre el
     // "pushName" que la propia persona se puso en WhatsApp — ver savedContactNames arriba.
     let contactName: string = getSavedContactName(userId, senderJid) || msg.pushName || (senderJid || remoteJid).split('@')[0];
+    // Copia SIN el sufijo "· nombre del grupo" que se le agrega más abajo — para variables como
+    // "{nombre}" en los mensajes del flujo (ver flowEngine.service.ts) queremos solo el nombre de
+    // la persona, no "Juan · Grupo Ventas".
+    const plainContactName = contactName;
     let phone: string;
     let groupName: string | null = null;
 
@@ -556,7 +560,8 @@ return connectPromise;
       history,
       {},
       user.aiFallbackEnabled,
-      user.aiCustomInstructions
+      user.aiCustomInstructions,
+      plainContactName
     );
     if (!botResult) return;
 
