@@ -40,6 +40,10 @@ export interface HandoffContext {
 export interface HandoffResult {
   advisor: Advisor | null;
   notified: boolean;
+  /** true si NO se eligió un asesor nuevo porque esta conversación ya tenía uno asignado sin
+   * cerrar — whatsapp.service.ts usa esto para avisarle al cliente que ya está en fila, en vez
+   * del mensaje normal de derivación. */
+  alreadyPending?: boolean;
 }
 
 const DEFAULT_NOTIFY_TEMPLATE = [
@@ -67,6 +71,24 @@ export class HandoffService {
       }
       FlowEngineService.clearUserState(ctx.customerPhoneKey);
       return { advisor: ctx.resolvedAdvisor, notified: true };
+    }
+
+    // La conversación ya tiene un asesor asignado sin cerrar (ver AdvisorService.
+    // getActiveHandoffAdvisor) — no se elige uno nuevo, se re-pausa con el mismo para no terminar
+    // derivando al mismo cliente a una SEGUNDA persona.
+    try {
+      const existing = await AdvisorService.getActiveHandoffAdvisor(ctx.userId, ctx.botContactJid);
+      if (existing) {
+        try {
+          await BotContactService.setHandoffPause(ctx.userId, ctx.botContactJid, existing.id, ctx.request.pauseMinutes);
+        } catch (err) {
+          console.error('❌ [HandoffService] Error re-pausando el bot para esta conversación:', err);
+        }
+        FlowEngineService.clearUserState(ctx.customerPhoneKey);
+        return { advisor: existing, notified: false, alreadyPending: true };
+      }
+    } catch (err) {
+      console.error('❌ [HandoffService] Error chequeando si ya había un asesor asignado:', err);
     }
 
     let advisor: Advisor | null = null;

@@ -328,10 +328,13 @@ function buildHandoffTool(
           customerName,
           [...conversationHistory, { role: 'user' as const, content: userMessage }]
         );
-        if (!result) {
+        if (result.status === 'no_advisor') {
           return 'No hay asesores humanos configurados todavía — informale al cliente que en breve alguien del equipo se va a comunicar, sin inventar un nombre ni un tiempo exacto.';
         }
         outcome.advisor = result.advisor;
+        if (result.status === 'already_pending') {
+          return `A este cliente ya se lo había derivado antes a ${result.advisor.name} en esta misma charla y sigue en fila — NO lo derives de nuevo. Avisale de forma breve y cordial que ${result.advisor.name} ya fue notificado y le va a responder pronto.`;
+        }
         return `Se derivó correctamente a ${result.advisor.name}. Confirmale al cliente, en una frase breve y cordial, que ${result.advisor.name} (un asesor humano) se va a poner en contacto en breve — no agregues más información técnica sobre la derivación.`;
       }
     })

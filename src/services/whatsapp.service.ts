@@ -142,7 +142,12 @@ async function tryBreakHandoffPauseWithMasterTrigger(userId: number, botContactJ
 
   console.log('🔄 [WhatsApp] Cliente en pausa escribió un trigger de flujo — levantando la pausa de asesor automáticamente.');
   try {
-    await BotContactService.clearHandoffPauseByJid(userId, botContactJid);
+    // OJO: a propósito NO usa clearHandoffPauseByJid (esa limpia handoff_advisor_id también, la
+    // usa FINISH_FLOW para cerrar el caso del todo). Acá solo se destraba para que el bot vuelva a
+    // responder — si el cliente pide un asesor de nuevo, el asesor ya asignado sigue "reservado"
+    // (ver AdvisorService.getActiveHandoffAdvisor) para no terminar derivándolo a una SEGUNDA
+    // persona por accidente.
+    await BotContactService.clearHandoffPauseKeepAdvisorByJid(userId, botContactJid);
     return true;
   } catch (err) {
     console.error('❌ [WhatsApp] Error levantando la pausa de handoff:', err);
@@ -842,6 +847,20 @@ return connectPromise;
             ? `🔀 [WhatsApp] Conversación derivada a "${handoffResult.advisor.name}" (asesor notificado=${handoffResult.notified}).`
             : '⚠️ [WhatsApp] Se pidió derivar a un asesor pero no hay ninguno activo — no se pausó el bot.'
         );
+
+        // El bloque "Contactar Asesor" del flujo ya eligió esta conversación como si fuera nueva,
+        // pero ya tenía un asesor asignado sin cerrar — el texto que mandó el nodo (ej. "te estamos
+        // derivando...") queda desactualizado, así que se aclara con un mensaje aparte en vez de
+        // dejar que el cliente crea que se lo derivó de nuevo (o a alguien distinto).
+        if (handoffResult.alreadyPending && handoffResult.advisor) {
+          try {
+            await sendWithRetry(socket, remoteJid, {
+              text: `Ya te había comunicado con ${handoffResult.advisor.name} — en breve te responde. Si necesitás algo más mientras tanto, contame.`
+            });
+          } catch (err) {
+            console.error('❌ [WhatsApp] Error avisando que el cliente ya estaba en fila:', err);
+          }
+        }
       } catch (err) {
         console.error('❌ [WhatsApp] Error ejecutando la derivación a asesor:', err);
       }
@@ -869,6 +888,22 @@ return connectPromise;
     emitStatus(userId, 'disconnected');
   }
 
+  /**
+   * Convierte un `phone` como los que usa el resto del backend (clave de estado de
+   * FlowEngineService/ConversationService — dígitos para individual, `${grupoId}-${participante}`
+   * para grupo) al JID real de WhatsApp. Extraído de acá mismo (antes vivía inline en
+   * sendTextMessage) para reusarlo en AdvisorService.handoffConversation, que necesita resolver el
+   * mismo `botContactJid` que ya usa bot_contacts para chequear si esta conversación ya tiene un
+   * asesor asignado (ver AdvisorService.getActiveHandoffAdvisor).
+   */
+  static phoneToJid(phone: string): string {
+    if (phone.includes('@')) return phone;
+    if (phone.includes('-') && phone.startsWith('120363')) return `${phone.split('-')[0]}@g.us`;
+    if (phone.startsWith('120363')) return `${phone}@g.us`;
+    const cleanPhone = phone.replace(/[^0-9]/g, '');
+    return `${cleanPhone}@s.whatsapp.net`;
+  }
+
   static async sendTextMessage(phone: string, text: string, userId?: number): Promise<boolean> {
     let targetSession: WhatsappSession | undefined;
     if (userId) {
@@ -886,17 +921,7 @@ return connectPromise;
       throw new Error('No hay una sesión de WhatsApp conectada para enviar el mensaje.');
     }
 
-    let jid: string;
-    if (phone.includes('@')) {
-      jid = phone;
-    } else if (phone.includes('-') && phone.startsWith('120363')) {
-      jid = `${phone.split('-')[0]}@g.us`;
-    } else if (phone.startsWith('120363')) {
-      jid = `${phone}@g.us`;
-    } else {
-      const cleanPhone = phone.replace(/[^0-9]/g, '');
-      jid = `${cleanPhone}@s.whatsapp.net`;
-    }
+    const jid = this.phoneToJid(phone);
     await sendWithRetry(targetSession.socket, jid, { text });
     return true;
   }
