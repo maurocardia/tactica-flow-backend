@@ -217,6 +217,25 @@ export class BotContactService {
     );
   }
 
+  /**
+   * Igual que clearHandoffPause, pero direccionado por jid/teléfono en vez del id de fila — para
+   * los dos caminos que NO tienen ese id a mano (Issue #38 [BE-053]): el botón "Finalizar
+   * atención y reactivar bot" de la tarjeta del chat activo (solo conoce el jid abierto en
+   * WhatsApp Web, no la fila de bot_contacts) y el trigger maestro de flujo en
+   * WhatsappService.handleIncomingMessage (mismo caso). También limpia handoff_advisor_id, a
+   * diferencia de clearHandoffPause, para no dejar un asesor "asignado" a una conversación que ya
+   * se reactivó por otra vía.
+   */
+  static async clearHandoffPauseByJid(userId: number, jid: string): Promise<void> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    await db.query(
+      `UPDATE bot_contacts
+       SET handoff_paused_until = NULL, handoff_advisor_id = NULL
+       WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
+      [userId, ownerJid, jid]
+    );
+  }
+
   /** Botón "Reactivar bot" del panel — vuelve a dejar que el bot le responda a este contacto. */
   static async clearHandoffPause(id: number): Promise<BotContact | null> {
     const { rows } = await db.query(

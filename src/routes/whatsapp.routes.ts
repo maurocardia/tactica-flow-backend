@@ -6,6 +6,7 @@ import { BotContactService } from '../services/botContact.service.js';
 import { AdvisorService } from '../services/advisor.service.js';
 import { FlowMediaService } from '../services/flowMedia.service.js';
 import { authMiddleware } from '../middleware/auth.middleware.js';
+import { io } from '../server.js';
 
 const router = Router();
 
@@ -363,6 +364,31 @@ router.put('/bot-contacts/:id/enabled', async (req: Request, res: Response) => {
     res.json(contact);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al actualizar el switch del contacto' });
+  }
+});
+
+// Reactiva el bot para un contacto pausado por una derivación a asesor (bloque "Contactar
+// Asesor" del flujo) — botón "Finalizar atención y reactivar bot" de la tarjeta del chat activo
+// (Issue #38 [BE-053] / #32 [FE-049]). A diferencia de PUT /bot-contacts/:id/resume-bot (de abajo,
+// usado desde la lista de Contactos del panel, donde ya se conoce el id de la fila), este va por
+// jid/teléfono porque el chat activo solo expone eso.
+router.post('/bot-contacts/unpause', async (req: Request, res: Response) => {
+  const { jid, phone } = req.body;
+  let targetJid: string | undefined = typeof jid === 'string' && jid.trim() ? jid.trim() : undefined;
+  if (!targetJid && typeof phone === 'string' && phone.trim()) {
+    const cleanPhone = phone.replace(/[^0-9]/g, '');
+    if (cleanPhone) targetJid = `${cleanPhone}@s.whatsapp.net`;
+  }
+  if (!targetJid) {
+    return res.status(400).json({ error: 'Se requiere "jid" o "phone"' });
+  }
+
+  try {
+    await BotContactService.clearHandoffPauseByJid(req.user!.id, targetJid);
+    io.emit('bot_contact_updated', { jid: targetJid, handoffPausedUntil: null });
+    res.json({ jid: targetJid, handoffPausedUntil: null });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al reactivar el bot para este contacto' });
   }
 });
 
