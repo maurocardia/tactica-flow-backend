@@ -218,7 +218,7 @@ export class FlowEngineService {
     if (!node) return { messages: [], action: 'STATIC_REPLY', endNodeId: nodeId };
 
     const messages: FlowOutboundMessage[] = [];
-    let action = node.type === 'CALL_AI' ? 'CALL_AI' : node.type === 'HANDOFF' ? 'HANDOFF' : 'STATIC_REPLY';
+    let action = node.type === 'CALL_AI' ? 'CALL_AI' : node.type === 'HANDOFF' ? 'HANDOFF' : node.type === 'FINISH_FLOW' ? 'FINISH_FLOW' : 'STATIC_REPLY';
     let handoff: FlowHandoffRequest | undefined;
     const replyText: string | undefined = node.data?.replyText || undefined;
 
@@ -279,6 +279,13 @@ export class FlowEngineService {
         // Corta acá: espera la elección del cliente, no sigue la conexión default.
         return { messages, action, endNodeId: nodeId };
       }
+      case 'FINISH_FLOW': {
+        if (replyText) messages.push({ kind: 'text', text: replyText });
+        // Nodo terminal (Issue #38 [BE-053]): no busca conexión saliente, corta la cadena acá —
+        // el que limpia el estado en memoria y la pausa de handoff es processMessage/
+        // finalizeChainResult más abajo, que sí tiene a mano el customerPhoneNumber/sendContext.
+        return { messages, action, endNodeId: nodeId };
+      }
       case 'HANDOFF': {
         if (replyText) messages.push({ kind: 'text', text: replyText });
         handoff = {
@@ -319,6 +326,48 @@ export class FlowEngineService {
       .filter((m): m is Extract<FlowOutboundMessage, { kind: 'text' }> => m.kind === 'text')
       .map((m) => m.text)
       .join('\n\n');
+  }
+
+  // Compartido por los dos puntos de retorno de processMessage (opción de menú elegida / trigger
+  // global matcheado) — decide qué hacer con el estado en memoria según cómo terminó la cadena de
+  // nodos. Nodo terminal FINISH_FLOW (Issue #38 [BE-053]): limpia la posición en el flujo Y
+  // cualquier pausa de handoff que hubiera para este contacto — así una charla que ya se cerró no
+  // queda ni "atascada" esperando una respuesta que nunca va a llegar, ni bloqueada por una
+  // derivación vieja. Cualquier otro final: comportamiento histórico (guarda el nodo, arma el
+  // timer de "sin respuesta" si corresponde).
+  private static async finalizeChainResult(
+    customerPhoneNumber: string,
+    finalMessages: FlowOutboundMessage[],
+    action: string,
+    handoff: FlowHandoffRequest | undefined,
+    endNodeId: string,
+    flowData: any,
+    sendContext?: FlowTimeoutSendContext
+  ): Promise<FlowResponse> {
+    if (action === 'FINISH_FLOW') {
+      this.clearUserState(customerPhoneNumber);
+      if (sendContext) {
+        try {
+          const { BotContactService } = await import('./botContact.service.js');
+          await BotContactService.clearHandoffPauseByJid(sendContext.userId, sendContext.botContactJid);
+        } catch (err) {
+          console.error('❌ [FlowEngineService] Error limpiando la pausa de handoff tras FINISH_FLOW:', err);
+        }
+      }
+    } else {
+      this.setUserState(customerPhoneNumber, endNodeId, sendContext);
+      const endNode = flowData.nodes.find((n: any) => n.id === endNodeId);
+      if (endNode) this.scheduleTimeout(customerPhoneNumber, endNode, flowData, sendContext);
+    }
+
+    return {
+      replyText: this.toReplyText(finalMessages),
+      messages: finalMessages,
+      source: 'FLOW_ENGINE',
+      sourceKbIds: [],
+      action,
+      handoff
+    };
   }
 
   static async processMessage(
@@ -366,17 +415,7 @@ export class FlowEngineService {
             if (conn) {
               const { messages, action, handoff, endNodeId } = this.buildNodeChain(conn.targetNodeId, flowData);
               const finalMessages = this.applyVariablesToMessages(messages, vars);
-              this.setUserState(customerPhoneNumber, endNodeId, sendContext);
-              const endNode = flowData.nodes.find((n: any) => n.id === endNodeId);
-              if (endNode) this.scheduleTimeout(customerPhoneNumber, endNode, flowData, sendContext);
-              return {
-                replyText: this.toReplyText(finalMessages),
-                messages: finalMessages,
-                source: 'FLOW_ENGINE',
-                sourceKbIds: [],
-                action,
-                handoff
-              };
+              return await this.finalizeChainResult(customerPhoneNumber, finalMessages, action, handoff, endNodeId, flowData, sendContext);
             }
           } else {
             // Invalid option fallback: keep them in the menu and warn (y renueva su propio timer
@@ -402,17 +441,7 @@ export class FlowEngineService {
         if (matched) {
           const { messages, action, handoff, endNodeId } = this.buildNodeChain(node.id, flowData);
           const finalMessages = this.applyVariablesToMessages(messages, vars);
-          this.setUserState(customerPhoneNumber, endNodeId, sendContext);
-          const endNode = flowData.nodes.find((n: any) => n.id === endNodeId);
-          if (endNode) this.scheduleTimeout(customerPhoneNumber, endNode, flowData, sendContext);
-          return {
-            replyText: this.toReplyText(finalMessages),
-            messages: finalMessages,
-            source: 'FLOW_ENGINE',
-            sourceKbIds: [],
-            action,
-            handoff
-          };
+          return await this.finalizeChainResult(customerPhoneNumber, finalMessages, action, handoff, endNodeId, flowData, sendContext);
         }
       }
     }

@@ -116,6 +116,40 @@ async function sendWithRetry(
   }
 }
 
+// Palabras clave "maestras" (Issue #38 [BE-053]): si un cliente en pausa de asesor escribe
+// cualquiera de estas, o un trigger propio del flujo, se interpreta como que quiere volver a
+// empezar — se levanta la pausa automáticamente en vez de dejarlo bloqueado hasta que el asesor
+// (o alguien desde el panel) lo reactive a mano. Ver el chequeo de gating.handoffPausedUntil en
+// handleIncomingMessage.
+const MASTER_TRIGGER_KEYWORDS = ['menu', 'menú', 'inicio', 'hola', 'volver', 'empezar'];
+
+async function tryBreakHandoffPauseWithMasterTrigger(userId: number, botContactJid: string, textLower: string): Promise<boolean> {
+  let matchesTrigger = MASTER_TRIGGER_KEYWORDS.some((kw) => textLower.includes(kw));
+
+  if (!matchesTrigger) {
+    try {
+      const flowData = await FlowEngineService.getFlowData();
+      const nodes = Array.isArray(flowData?.nodes) ? flowData.nodes : [];
+      matchesTrigger = nodes.some(
+        (n: any) => Array.isArray(n.data?.keywords) && n.data.keywords.some((kw: string) => textLower.includes(String(kw).toLowerCase()))
+      );
+    } catch (err) {
+      console.error('❌ [WhatsApp] Error revisando triggers del flujo para romper la pausa de handoff:', err);
+    }
+  }
+
+  if (!matchesTrigger) return false;
+
+  console.log('🔄 [WhatsApp] Cliente en pausa escribió un trigger de flujo — levantando la pausa de asesor automáticamente.');
+  try {
+    await BotContactService.clearHandoffPauseByJid(userId, botContactJid);
+    return true;
+  } catch (err) {
+    console.error('❌ [WhatsApp] Error levantando la pausa de handoff:', err);
+    return false;
+  }
+}
+
 // Arma el `content` real de Baileys para un mensaje de tipo 'media' del flujo — carga los bytes
 // desde flow_media_assets (adjunto subido) o pasa la URL tal cual (adjunto por URL, sin infra
 // propia). Devuelve null si el nodo quedó mal configurado (sin adjunto todavía), para que el
@@ -722,7 +756,13 @@ return connectPromise;
     // Pausa por derivación a un asesor humano (bloque "Contactar Asesor" del flujo) — mientras
     // esté pausado, el bot no le responde a este contacto puntual, sin importar ningún otro
     // switch, hasta que venza el tiempo configurado o se reactive a mano desde el panel.
-    if (gating.handoffPausedUntil && gating.handoffPausedUntil > new Date()) return;
+    // EXCEPCIÓN (Issue #38 [BE-053]): un trigger del flujo o una palabra clave maestra de inicio
+    // levanta la pausa automáticamente, para no dejar al cliente atrapado esperando a que un
+    // asesor (o alguien desde el panel) lo libere a mano.
+    if (gating.handoffPausedUntil && gating.handoffPausedUntil > new Date()) {
+      const brokePause = await tryBreakHandoffPauseWithMasterTrigger(userId, botContactJid, text.trim().toLowerCase());
+      if (!brokePause) return;
+    }
 
     if (!user?.botEnabled) return;
 
