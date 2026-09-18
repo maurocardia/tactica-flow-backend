@@ -55,6 +55,12 @@ export class BotEngineService {
         console.log(`🤖 [BOT ENGINE] Regla activada por palabra clave: ${rule.id} (${rule.name}, acción: ${rule.action})`);
 
         if (rule.action === 'CALL_AI') {
+          // Modo "Solo Flujos": ninguna vía debe invocar a la IA, ni siquiera esta regla legacy
+          // — se ignora como si no hubiera matcheado (con "continue", no "return", para no caer
+          // en el "if (rule.replyText)" de más abajo, que mandaría la instrucción de IA de esta
+          // regla como si fuera el texto literal a enviar) y se sigue evaluando el resto.
+          if (botMode === 'flow_only') continue;
+
           let knowledgeContext = '';
           let sourceKbIds: number[] = [];
           try {
