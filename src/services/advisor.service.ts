@@ -74,32 +74,94 @@ export class AdvisorService {
   }
 
   /**
-   * Elige a qué asesor ACTIVO le toca la próxima derivación de forma equitativa: el que menos
-   * derivaciones tenga hasta ahora, y entre empatados el que hace más tiempo no recibe una (o
-   * nunca recibió ninguna) — así ninguno queda sobrecargado mientras otros no reciben nada.
+   * Elige a qué asesor ACTIVO le toca la próxima derivación de forma equitativa (el que menos
+   * derivaciones tenga hasta ahora, y entre empatados el que hace más tiempo no recibe una o
+   * nunca recibió ninguna) Y registra esa derivación (handoff_count + last_handoff_at) en la
+   * MISMA operación atómica — el "FOR UPDATE SKIP LOCKED" de la subconsulta evita que dos
+   * derivaciones concurrentes del mismo usuario elijan al mismo asesor antes de que cualquiera
+   * de las dos termine de contarla (antes eran dos pasos sueltos: un SELECT del candidato acá y
+   * un UPDATE aparte en recordHandoff, con esa ventana de carrera abierta en el medio).
    * Devuelve null si no hay ningún asesor activo.
-   *
-   * NOTA: esto solo elige y registra la derivación (ver recordHandoff) — no decide CUÁNDO el bot
-   * debe derivar una conversación a un humano; esa lógica (que el bot detecte que necesita
-   * intervención) no forma parte de estos endpoints y queda pendiente.
    */
   static async pickNextAdvisor(userId: number): Promise<Advisor | null> {
     const { rows } = await db.query(
-      `SELECT * FROM advisors
-       WHERE user_id = $1 AND is_active = true
-       ORDER BY handoff_count ASC, last_handoff_at ASC NULLS FIRST, id ASC
-       LIMIT 1`,
+      `UPDATE advisors SET handoff_count = handoff_count + 1, last_handoff_at = now()
+       WHERE id = (
+         SELECT id FROM advisors
+         WHERE user_id = $1 AND is_active = true
+         ORDER BY handoff_count ASC, last_handoff_at ASC NULLS FIRST, id ASC
+         LIMIT 1
+         FOR UPDATE SKIP LOCKED
+       )
+       RETURNING *`,
       [userId]
     );
     return rows.length > 0 ? mapRow(rows[0]) : null;
   }
 
-  /** Registra que se le acaba de derivar una conversación a este asesor. */
+  /** Registra una derivación a un asesor elegido a mano (modo "fijo" del flujo) — pickNextAdvisor
+   * ya cuenta la suya propia atómicamente, así que esto NO se llama después de esa. */
   static async recordHandoff(id: number): Promise<Advisor | null> {
     const { rows } = await db.query(
       `UPDATE advisors SET handoff_count = handoff_count + 1, last_handoff_at = now() WHERE id = $1 RETURNING *`,
       [id]
     );
     return rows.length > 0 ? mapRow(rows[0]) : null;
+  }
+
+  /**
+   * Deriva esta conversación a un asesor humano (Issue #30 [BE-049], punto 2 y 3): elige al
+   * siguiente por round-robin, genera un resumen breve con IA (modo 'utility', sin tools ni
+   * Base de Conocimiento — es una tarea de redacción, no una respuesta al cliente) y le manda al
+   * asesor un WhatsApp con los datos del cliente + ese resumen. Usada tanto por la regla legacy
+   * CALL_AI/HANDOFF (botEngine.service.ts) como por la tool de function-calling
+   * handoff_to_advisor (ai.service.ts) — a diferencia del bloque "Contactar Asesor" del editor de
+   * flujos (ver HandoffService), que tiene su propia plantilla configurable y NO pasa por acá.
+   *
+   * Importa AIService/WhatsappService de forma dinámica (no en el import estático de arriba) para
+   * no crear un ciclo: whatsapp.service.ts -> handoff.service.ts -> advisor.service.ts ya existe,
+   * así que este archivo no puede importar whatsapp.service.ts de entrada sin cerrar ese ciclo.
+   */
+  static async handoffConversation(
+    userId: number,
+    customerPhone: string,
+    customerName: string,
+    conversationHistory: { role: 'user' | 'assistant' | 'system'; content: string }[]
+  ): Promise<{ advisor: Advisor; summary: string } | null> {
+    const advisor = await AdvisorService.pickNextAdvisor(userId);
+    if (!advisor) return null;
+
+    let summary = 'El cliente necesita atención — no se pudo generar un resumen automático.';
+    try {
+      const { AIService } = await import('./ai.service.js');
+      const transcript = conversationHistory.map((m) => `${m.role === 'user' ? 'Cliente' : 'Bot'}: ${m.content}`).join('\n');
+      const { text } = await AIService.processMessage(
+        `Resumí en máximo 5 líneas esta conversación de WhatsApp para que un asesor humano pueda retomar la atención:\n${transcript}`,
+        [],
+        {},
+        '',
+        '',
+        'utility'
+      );
+      if (text.trim()) summary = text.trim();
+    } catch (err) {
+      console.error('❌ [AdvisorService] No se pudo generar el resumen de la charla con IA:', err);
+    }
+
+    const message = [
+      '🔔 *Derivación Automática*',
+      `📱 Cliente: ${customerName} (${customerPhone})`,
+      `📋 Resumen: ${summary}`,
+      '💬 Respondé a este número para continuar la atención.',
+    ].join('\n');
+
+    try {
+      const { WhatsappService } = await import('./whatsapp.service.js');
+      await WhatsappService.sendTextMessage(advisor.phone, message, userId);
+    } catch (err) {
+      console.error(`⚠️ [AdvisorService] No se pudo notificar al asesor "${advisor.name}":`, err);
+    }
+
+    return { advisor, summary };
   }
 }

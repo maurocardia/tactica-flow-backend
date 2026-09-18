@@ -753,7 +753,8 @@ return connectPromise;
         participantJid,
         contactName: plainContactName,
         groupName
-      }
+      },
+      userId
     );
     if (!botResult) return;
 
@@ -793,7 +794,8 @@ return connectPromise;
           isGroup,
           groupName,
           lastMessageText: text,
-          request: botResult.handoff
+          request: botResult.handoff,
+          resolvedAdvisor: botResult.resolvedAdvisor
         });
         console.log(
           handoffResult.advisor
