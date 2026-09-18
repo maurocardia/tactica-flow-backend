@@ -542,6 +542,11 @@ return connectPromise;
       console.warn('[WhatsApp] Error cancelando programados al recibir respuesta:', err);
     }
 
+    // Blacklist: gana por encima de CUALQUIER otro switch (Responder a todos, bot habilitado,
+    // modo de respuesta, etc.) — un contacto en esta lista nunca recibe respuesta del bot, sin
+    // excepción. Por eso se chequea primero, antes que nada más.
+    if (await BotContactService.isBlacklisted(userId, botContactJid)) return;
+
     if (!user?.botEnabled) return;
 
     // "Responder a todos" vs "Responder a contactos seleccionados": con el modo "todos" activado

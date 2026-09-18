@@ -268,6 +268,13 @@ const SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS idx_bot_contacts_user_id ON bot_contacts(user_id, owner_jid, last_activity DESC);
 
+  -- Blacklist (pestaña nueva junto a Contactos/Grupos en ContactBotSwitchesModal.tsx): un
+  -- contacto acá NUNCA recibe respuesta del bot, sin importar "Responder a todos" ni ningún otro
+  -- switch — ver el chequeo al principio de WhatsappService.handleIncomingMessage. Se reutiliza
+  -- bot_contacts en vez de una tabla aparte porque ya trae toda la infraestructura de alta manual/
+  -- búsqueda por nombre/JID real; is_blacklisted=true implica bot_enabled=false siempre.
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS is_blacklisted BOOLEAN NOT NULL DEFAULT false;
+
   -- "Delay humanizado" (panel: sección "replyDelay" de ChatbotModule): espera un tiempo aleatorio
   -- entre bot_reply_delay_min_ms y bot_reply_delay_max_ms antes de mandar la respuesta del bot,
   -- para que no se sienta instantánea/robótica — ver WhatsappService.handleIncomingMessage.

@@ -9,6 +9,7 @@ export interface BotContact {
   name: string;
   isGroup: boolean;
   botEnabled: boolean;
+  isBlacklisted: boolean;
   lastActivity: string;
 }
 
@@ -21,6 +22,7 @@ function mapRow(row: any): BotContact {
     name: row.name,
     isGroup: row.is_group,
     botEnabled: row.bot_enabled,
+    isBlacklisted: row.is_blacklisted,
     lastActivity: new Date(row.last_activity).toISOString(),
   };
 }
@@ -122,6 +124,44 @@ export class BotContactService {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';
     const { rows } = await db.query('SELECT bot_enabled FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND jid = $3', [userId, ownerJid, jid]);
     return rows.length > 0 ? rows[0].bot_enabled : false;
+  }
+
+  /**
+   * Blacklist (pestaña del panel junto a Contactos/Grupos): gana por encima de CUALQUIER otro
+   * switch — ver el chequeo al principio de WhatsappService.handleIncomingMessage, que se fija
+   * esto ANTES que "Responder a todos" o el switch normal del contacto.
+   */
+  static async isBlacklisted(userId: number, jid: string): Promise<boolean> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query(
+      'SELECT is_blacklisted FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND jid = $3',
+      [userId, ownerJid, jid]
+    );
+    return rows.length > 0 ? rows[0].is_blacklisted : false;
+  }
+
+  /** Bloquea/desbloquea una fila ya existente — is_blacklisted=true siempre apaga bot_enabled. */
+  static async setBlacklisted(id: number, blacklisted: boolean): Promise<BotContact | null> {
+    const { rows } = await db.query(
+      `UPDATE bot_contacts
+       SET is_blacklisted = $1, bot_enabled = CASE WHEN $1 THEN false ELSE bot_enabled END
+       WHERE id = $2 RETURNING *`,
+      [blacklisted, id]
+    );
+    return rows.length > 0 ? mapRow(rows[0]) : null;
+  }
+
+  /** Alta directa a la blacklist (número que nunca le escribió al bot pero se quiere bloquear igual). */
+  static async addToBlacklist(userId: number, jid: string, name: string): Promise<BotContact> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query(
+      `INSERT INTO bot_contacts (user_id, owner_jid, jid, name, is_group, bot_enabled, is_blacklisted)
+       VALUES ($1, $2, $3, $4, false, false, true)
+       ON CONFLICT (user_id, owner_jid, jid) DO UPDATE SET is_blacklisted = true, bot_enabled = false
+       RETURNING *`,
+      [userId, ownerJid, jid, name]
+    );
+    return mapRow(rows[0]);
   }
 
   /** Borra un contacto/grupo puntual de la lista — botón "X" del panel. Solo afecta bot_contacts. */

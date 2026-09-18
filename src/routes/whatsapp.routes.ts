@@ -346,6 +346,45 @@ router.put('/bot-contacts/:id/enabled', async (req: Request, res: Response) => {
   }
 });
 
+// Blacklist (pestaña junto a Contactos/Grupos en el panel): bloquea/desbloquea un contacto ya
+// existente en bot_contacts — bloquearlo apaga bot_enabled automáticamente (ver
+// BotContactService.setBlacklisted).
+router.put('/bot-contacts/:id/blacklisted', async (req: Request, res: Response) => {
+  const { blacklisted } = req.body;
+  if (typeof blacklisted !== 'boolean') {
+    return res.status(400).json({ error: 'El campo "blacklisted" es obligatorio y debe ser booleano' });
+  }
+
+  try {
+    const contact = await BotContactService.setBlacklisted(Number(req.params.id), blacklisted);
+    if (!contact) return res.status(404).json({ error: 'Contacto no encontrado' });
+    res.json(contact);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar la blacklist' });
+  }
+});
+
+// Alta directa a la blacklist (número que nunca le escribió al bot pero se quiere bloquear igual,
+// mismo patrón que el alta manual de POST /bot-contacts de abajo).
+router.post('/bot-contacts/blacklist', async (req: Request, res: Response) => {
+  const { phone, name } = req.body;
+  if (typeof phone !== 'string' || !phone.trim()) {
+    return res.status(400).json({ error: 'El campo "phone" es obligatorio' });
+  }
+
+  try {
+    const cleanPhone = phone.replace(/[^0-9]/g, '');
+    if (!cleanPhone) {
+      return res.status(400).json({ error: 'El número de teléfono no es válido' });
+    }
+    const jid = `${cleanPhone}@s.whatsapp.net`;
+    const contact = await BotContactService.addToBlacklist(req.user!.id, jid, name?.trim() || cleanPhone);
+    res.json(contact);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al bloquear el número de teléfono' });
+  }
+});
+
 // Registra (o encuentra) un número de teléfono como contacto administrable, con el switch en el
 // estado indicado — útil para prender el bot a un número que todavía no le escribió nunca al bot.
 router.post('/bot-contacts', async (req: Request, res: Response) => {
