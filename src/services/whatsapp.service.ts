@@ -160,6 +160,28 @@ async function resolveMediaContent(
   }
 }
 
+// "Delay humanizado" (Issue #29 [BE-048]): antes de mandar la respuesta del bot, espera un
+// tiempo proporcional a su longitud (para que no se sienta instantáneo/robótico) y muestra el
+// indicador "escribiendo..." de WhatsApp durante esa espera. min/maxMs vienen de la preferencia
+// del usuario (users.bot_reply_delay_min_ms/max_ms, ver ChatbotModule.tsx sección "replyDelay").
+// sendPresenceUpdate en try/catch silencioso: es solo cosmético, nunca debe bloquear el envío
+// real de la respuesta si falla.
+async function humanDelay(socket: WASocket, jid: string, replyText: string, minMs: number, maxMs: number): Promise<void> {
+  const min = Math.min(minMs, maxMs);
+  const max = Math.max(minMs, maxMs);
+  const base = Math.min(max, min + replyText.length * 15);
+  const jitter = (Math.random() * 2 - 1) * 500; // ±500ms para que no sea predecible
+  const delayMs = Math.min(max, Math.max(min, base + jitter));
+
+  try {
+    await socket.sendPresenceUpdate('composing', jid);
+  } catch {}
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+  try {
+    await socket.sendPresenceUpdate('paused', jid);
+  } catch {}
+}
+
 // Manda la lista de mensajes que armó el flujo (texto/media/delay), en orden — reemplaza el envío
 // de un único `{ text }` fijo que había antes. La mención "@fulano" de grupos va solo en el
 // PRIMER mensaje de texto (antes solo había uno, así que no cambia el comportamiento existente).
@@ -735,13 +757,10 @@ return connectPromise;
     );
     if (!botResult) return;
 
-    // "Delay humanizado": espera un tiempo aleatorio entre min/max antes de mandar la respuesta,
-    // para que no se sienta instantánea/robótica — ver ChatbotModule.tsx (sección "replyDelay").
+    // "Delay humanizado" (Issue #29 [BE-048]): espera proporcional a la longitud de la respuesta,
+    // con el indicador "escribiendo..." de WhatsApp visible durante esa espera — ver humanDelay().
     if (user.botReplyDelayEnabled) {
-      const min = Math.min(user.botReplyDelayMinMs, user.botReplyDelayMaxMs);
-      const max = Math.max(user.botReplyDelayMinMs, user.botReplyDelayMaxMs);
-      const delayMs = min + Math.random() * (max - min);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      await humanDelay(socket, remoteJid, botResult.replyText, user.botReplyDelayMinMs, user.botReplyDelayMaxMs);
     }
 
     await sendFlowMessages(userId, socket, remoteJid, botResult.messages, { isGroup, participantJid });
