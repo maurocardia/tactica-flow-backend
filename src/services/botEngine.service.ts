@@ -116,9 +116,14 @@ export class BotEngineService {
             try {
               const fullHistory = [...conversationHistory, { role: 'user' as const, content: incomingText }];
               const result = await AdvisorService.handoffConversation(userId, customerPhoneNumber, contactName, fullHistory);
-              if (result) {
+              if (result.status === 'handed_off') {
                 resolvedAdvisor = result.advisor;
                 text = `Perfecto, te estoy comunicando con ${result.advisor.name}, nuestro asesor. En breve te va a escribir por este mismo chat o te va a contactar al ${result.advisor.phone}.`;
+              } else if (result.status === 'already_pending') {
+                // Ya se le había derivado antes en esta misma charla — no elegir otro asesor, solo
+                // avisarle que sigue en fila (ver AdvisorService.getActiveHandoffAdvisor).
+                resolvedAdvisor = result.advisor;
+                text = `Ya te había comunicado con ${result.advisor.name}, nuestro asesor — en breve te responde. Si necesitás algo más mientras tanto, contame.`;
               }
             } catch (err) {
               console.error('❌ [BOT ENGINE] Error derivando a un asesor (regla HANDOFF):', err);

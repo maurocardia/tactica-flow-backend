@@ -218,13 +218,13 @@ export class BotContactService {
   }
 
   /**
-   * Igual que clearHandoffPause, pero direccionado por jid/teléfono en vez del id de fila — para
-   * los dos caminos que NO tienen ese id a mano (Issue #38 [BE-053]): el botón "Finalizar
-   * atención y reactivar bot" de la tarjeta del chat activo (solo conoce el jid abierto en
-   * WhatsApp Web, no la fila de bot_contacts) y el trigger maestro de flujo en
-   * WhatsappService.handleIncomingMessage (mismo caso). También limpia handoff_advisor_id, a
-   * diferencia de clearHandoffPause, para no dejar un asesor "asignado" a una conversación que ya
-   * se reactivó por otra vía.
+   * CIERRA el caso del todo — direccionado por jid en vez del id de fila, para los caminos que no
+   * tienen ese id a mano: el botón "Finalizar atención y reactivar bot" de la tarjeta del chat
+   * activo (solo conoce el jid abierto en WhatsApp Web) y el nodo terminal FINISH_FLOW del editor
+   * de flujos. Limpia handoff_advisor_id además de la pausa — es una decisión explícita de que
+   * esta conversación terminó, así que el próximo "Contactar Asesor" debe poder elegir uno nuevo
+   * sin restricciones. NO usar esto para "destrabar" al cliente sin cerrar el caso — ver
+   * clearHandoffPauseKeepAdvisorByJid.
    */
   static async clearHandoffPauseByJid(userId: number, jid: string): Promise<void> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';
@@ -236,10 +236,27 @@ export class BotContactService {
     );
   }
 
-  /** Botón "Reactivar bot" del panel — vuelve a dejar que el bot le responda a este contacto. */
+  /**
+   * Destraba al cliente (el bot vuelve a responderle) SIN cerrar el caso: deja handoff_advisor_id
+   * intacto a propósito. La usa el trigger maestro de flujo (WhatsappService.
+   * tryBreakHandoffPauseWithMasterTrigger) cuando un cliente ya derivado escribe algo tipo "menú"
+   * para poder seguir navegando el bot — si después vuelve a pedir un asesor, AdvisorService.
+   * getActiveHandoffAdvisor todavía lo encuentra y evita derivarlo a una SEGUNDA persona.
+   */
+  static async clearHandoffPauseKeepAdvisorByJid(userId: number, jid: string): Promise<void> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    await db.query(
+      `UPDATE bot_contacts SET handoff_paused_until = NULL WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
+      [userId, ownerJid, jid]
+    );
+  }
+
+  /** Botón "Reactivar bot" del panel — decisión humana explícita de cerrar el caso, igual que
+   * clearHandoffPauseByJid: también libera handoff_advisor_id (si no, un contacto reactivado a
+   * mano desde acá quedaría "reservado" para el mismo asesor para siempre). */
   static async clearHandoffPause(id: number): Promise<BotContact | null> {
     const { rows } = await db.query(
-      `UPDATE bot_contacts SET handoff_paused_until = NULL WHERE id = $1 RETURNING *`,
+      `UPDATE bot_contacts SET handoff_paused_until = NULL, handoff_advisor_id = NULL WHERE id = $1 RETURNING *`,
       [id]
     );
     return rows.length > 0 ? mapRow(rows[0]) : null;

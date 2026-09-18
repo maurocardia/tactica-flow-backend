@@ -110,6 +110,21 @@ export class AdvisorService {
   }
 
   /**
+   * Si esta conversación YA tiene un asesor asignado sin cerrar (bot_contacts.handoff_advisor_id
+   * — ver setHandoffPause/clearHandoffPauseByJid/clearHandoffPauseKeepAdvisorByJid en
+   * botContact.service.ts), lo devuelve — para que ningún camino de derivación (regla legacy,
+   * tool de IA, bloque "Contactar Asesor" del flujo) le asigne un SEGUNDO asesor al mismo cliente
+   * por accidente, ni siquiera después de que el trigger maestro le destrabó el bot para que
+   * pueda seguir navegando el menú.
+   */
+  static async getActiveHandoffAdvisor(userId: number, jid: string): Promise<Advisor | null> {
+    const { BotContactService } = await import('./botContact.service.js');
+    const gating = await BotContactService.getGatingFlags(userId, jid);
+    if (!gating.handoffAdvisorId) return null;
+    return AdvisorService.getById(userId, gating.handoffAdvisorId);
+  }
+
+  /**
    * Deriva esta conversación a un asesor humano (Issue #30 [BE-049], punto 2 y 3): elige al
    * siguiente por round-robin, genera un resumen breve con IA (modo 'utility', sin tools ni
    * Base de Conocimiento — es una tarea de redacción, no una respuesta al cliente) y le manda al
@@ -117,6 +132,9 @@ export class AdvisorService {
    * CALL_AI/HANDOFF (botEngine.service.ts) como por la tool de function-calling
    * handoff_to_advisor (ai.service.ts) — a diferencia del bloque "Contactar Asesor" del editor de
    * flujos (ver HandoffService), que tiene su propia plantilla configurable y NO pasa por acá.
+   *
+   * Antes de elegir uno nuevo, chequea getActiveHandoffAdvisor: si el cliente ya está en fila con
+   * alguien, devuelve status 'already_pending' con ESE mismo asesor en vez de derivar a otro.
    *
    * Importa AIService/WhatsappService de forma dinámica (no en el import estático de arriba) para
    * no crear un ciclo: whatsapp.service.ts -> handoff.service.ts -> advisor.service.ts ya existe,
@@ -127,9 +145,18 @@ export class AdvisorService {
     customerPhone: string,
     customerName: string,
     conversationHistory: { role: 'user' | 'assistant' | 'system'; content: string }[]
-  ): Promise<{ advisor: Advisor; summary: string } | null> {
+  ): Promise<
+    | { status: 'handed_off'; advisor: Advisor; summary: string }
+    | { status: 'already_pending'; advisor: Advisor }
+    | { status: 'no_advisor' }
+  > {
+    const { WhatsappService } = await import('./whatsapp.service.js');
+    const jid = WhatsappService.phoneToJid(customerPhone);
+    const existing = await AdvisorService.getActiveHandoffAdvisor(userId, jid);
+    if (existing) return { status: 'already_pending', advisor: existing };
+
     const advisor = await AdvisorService.pickNextAdvisor(userId);
-    if (!advisor) return null;
+    if (!advisor) return { status: 'no_advisor' };
 
     let summary = 'El cliente necesita atención — no se pudo generar un resumen automático.';
     try {
@@ -156,12 +183,11 @@ export class AdvisorService {
     ].join('\n');
 
     try {
-      const { WhatsappService } = await import('./whatsapp.service.js');
       await WhatsappService.sendTextMessage(advisor.phone, message, userId);
     } catch (err) {
       console.error(`⚠️ [AdvisorService] No se pudo notificar al asesor "${advisor.name}":`, err);
     }
 
-    return { advisor, summary };
+    return { status: 'handed_off', advisor, summary };
   }
 }
