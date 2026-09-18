@@ -563,9 +563,19 @@ return connectPromise;
       user.aiCustomInstructions,
       user.aiProvider,
       user.aiModel,
-      plainContactName
+      plainContactName,
+      user.botMode
     );
     if (!botResult) return;
+
+    // "Delay humanizado": espera un tiempo aleatorio entre min/max antes de mandar la respuesta,
+    // para que no se sienta instantánea/robótica — ver ChatbotModule.tsx (sección "replyDelay").
+    if (user.botReplyDelayEnabled) {
+      const min = Math.min(user.botReplyDelayMinMs, user.botReplyDelayMaxMs);
+      const max = Math.max(user.botReplyDelayMinMs, user.botReplyDelayMaxMs);
+      const delayMs = min + Math.random() * (max - min);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
 
     if (isGroup && participantJid) {
       await sendWithRetry(socket, remoteJid, {

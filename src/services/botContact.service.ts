@@ -142,4 +142,52 @@ export class BotContactService {
     );
     return mapRow(rows[0]);
   }
+
+  /**
+   * Importación masiva desde un CSV/Excel ya parseado en el frontend (ver BulkImportPreview.tsx):
+   * fila por fila, reusa addManual() (mismo upsert por jid que ya usa el alta manual) para no
+   * duplicar la normalización — solo agrega el conteo de nuevos vs. actualizados comparando
+   * contra la lista existente ANTES de arrancar (si dos filas del archivo repiten el mismo
+   * teléfono, la segunda ya cuenta como "actualización" en vez de otro "nuevo").
+   */
+  static async bulkImport(
+    userId: number,
+    contacts: { phone: string; name?: string; enabled: boolean }[]
+  ): Promise<{ created: number; updated: number; errors: number; errorDetails: string[] }> {
+    const existingJids = new Set((await this.list(userId)).map((c) => c.jid));
+    let created = 0;
+    let updated = 0;
+    let errors = 0;
+    const errorDetails: string[] = [];
+
+    for (const row of contacts) {
+      try {
+        const cleanPhone = String(row?.phone ?? '').replace(/[^0-9]/g, '');
+        if (cleanPhone.length < 8) {
+          errors++;
+          errorDetails.push(`Teléfono inválido: "${row?.phone ?? ''}"`);
+          continue;
+        }
+        if (typeof row?.enabled !== 'boolean') {
+          errors++;
+          errorDetails.push(`${cleanPhone}: falta el estado (enabled)`);
+          continue;
+        }
+        const jid = `${cleanPhone}@s.whatsapp.net`;
+        const wasExisting = existingJids.has(jid);
+        await this.addManual(userId, jid, row.name?.trim() || cleanPhone, row.enabled);
+        if (wasExisting) {
+          updated++;
+        } else {
+          created++;
+          existingJids.add(jid);
+        }
+      } catch (err) {
+        errors++;
+        errorDetails.push(`${row?.phone ?? '?'}: ${err instanceof Error ? err.message : 'error desconocido'}`);
+      }
+    }
+
+    return { created, updated, errors, errorDetails };
+  }
 }

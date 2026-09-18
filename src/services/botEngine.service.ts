@@ -19,7 +19,8 @@ export class BotEngineService {
     customInstructions: string = '',
     aiProvider: string = 'google',
     aiModel: string = '',
-    contactName: string = 'Cliente'
+    contactName: string = 'Cliente',
+    botMode: 'flow_only' | 'ai_only' | 'hybrid' = 'hybrid'
   ): Promise<{ replyText: string; source: 'KEYWORD_RULE' | 'AI_AGENT' | 'TACTICA_API' | 'FLOW_ENGINE'; sourceKbIds: number[] } | null> {
     const textLower = incomingText.trim().toLowerCase();
 
@@ -29,11 +30,14 @@ export class BotEngineService {
       .map((m: any) => (typeof m === 'string' ? m : m.content || m.text || ''))
       .join(' ');
 
-    // 1. Evaluar Flujo Visual (Con Estado)
-    const flowResult = await FlowEngineService.processMessage(incomingText, customerPhoneNumber, contactName);
-    if (flowResult) {
-      console.log(`🤖 [BOT ENGINE] Mensaje procesado por FlowEngine (estado guardado).`);
-      return flowResult;
+    // 1. Evaluar Flujo Visual (Con Estado) — se salta por completo en modo "Solo IA" (ver
+    // ChatbotModule.tsx, selector de modo de respuesta).
+    if (botMode !== 'ai_only') {
+      const flowResult = await FlowEngineService.processMessage(incomingText, customerPhoneNumber, contactName);
+      if (flowResult) {
+        console.log(`🤖 [BOT ENGINE] Mensaje procesado por FlowEngine (estado guardado).`);
+        return flowResult;
+      }
     }
 
     // 2. Evaluar Reglas por Palabras Clave (Keyword Triggers) - Legacy/Global
@@ -79,11 +83,15 @@ export class BotEngineService {
       }
     }
 
-    // Switch "Responder con IA": ninguna regla matcheó y el fallback está apagado -> no hay
-    // respuesta automática, queda solo el chatbot manual (el mensaje del cliente ya se logueó
-    // en el llamador, esto simplemente no genera una respuesta del bot).
-    if (!aiFallbackEnabled) {
-      console.log('🤖 [BOT ENGINE] Ninguna regla matcheó y el fallback de IA está apagado — sin respuesta automática.');
+    // Switch "Responder con IA" apagado, O modo "Solo Flujos" (que excluye la IA por completo,
+    // no solo el flujo visual) -> ninguna respuesta automática, queda solo el chatbot manual (el
+    // mensaje del cliente ya se logueó en el llamador, esto simplemente no genera respuesta).
+    if (!aiFallbackEnabled || botMode === 'flow_only') {
+      console.log(
+        botMode === 'flow_only'
+          ? '🤖 [BOT ENGINE] Modo "Solo Flujos": el flujo no matcheó y no se cae a IA — sin respuesta automática.'
+          : '🤖 [BOT ENGINE] Ninguna regla matcheó y el fallback de IA está apagado — sin respuesta automática.'
+      );
       return null;
     }
 

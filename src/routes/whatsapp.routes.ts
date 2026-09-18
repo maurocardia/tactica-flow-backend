@@ -1,7 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { WhatsappService } from '../services/whatsapp.service.js';
-import { AuthService, AiPromptSections, AiGeneralRules } from '../services/auth.service.js';
+import { AuthService, AiPromptSections, AiGeneralRules, BotMode } from '../services/auth.service.js';
 import { BotContactService } from '../services/botContact.service.js';
+import { AdvisorService } from '../services/advisor.service.js';
 import { authMiddleware } from '../middleware/auth.middleware.js';
 
 const router = Router();
@@ -198,6 +199,55 @@ router.put('/bot-reply-to-all', async (req: Request, res: Response) => {
   }
 });
 
+// "Delay humanizado": espera un tiempo aleatorio entre minMs y maxMs antes de mandar la
+// respuesta del bot — ver ChatbotModule.tsx (sección "replyDelay") y
+// WhatsappService.handleIncomingMessage.
+const DELAY_MS_MIN_ALLOWED = 0;
+const DELAY_MS_MAX_ALLOWED = 60_000; // 1 minuto: un delay mayor no tiene sentido para un chat
+router.put('/bot-reply-delay', async (req: Request, res: Response) => {
+  const { enabled, minMs, maxMs } = req.body;
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ error: 'El campo "enabled" es requerido y debe ser booleano' });
+  }
+  if (minMs !== undefined && (typeof minMs !== 'number' || minMs < DELAY_MS_MIN_ALLOWED || minMs > DELAY_MS_MAX_ALLOWED)) {
+    return res.status(400).json({ error: `El campo "minMs" debe ser un número entre ${DELAY_MS_MIN_ALLOWED} y ${DELAY_MS_MAX_ALLOWED}` });
+  }
+  if (maxMs !== undefined && (typeof maxMs !== 'number' || maxMs < DELAY_MS_MIN_ALLOWED || maxMs > DELAY_MS_MAX_ALLOWED)) {
+    return res.status(400).json({ error: `El campo "maxMs" debe ser un número entre ${DELAY_MS_MIN_ALLOWED} y ${DELAY_MS_MAX_ALLOWED}` });
+  }
+  if (typeof minMs === 'number' && typeof maxMs === 'number' && minMs > maxMs) {
+    return res.status(400).json({ error: 'El "minMs" no puede ser mayor que el "maxMs"' });
+  }
+
+  try {
+    const user = await AuthService.setBotReplyDelay(req.user!.id, { enabled, minMs, maxMs });
+    res.json({
+      botReplyDelayEnabled: user?.botReplyDelayEnabled ?? enabled,
+      botReplyDelayMinMs: user?.botReplyDelayMinMs,
+      botReplyDelayMaxMs: user?.botReplyDelayMaxMs
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar el delay humanizado' });
+  }
+});
+
+// Modo de respuesta del bot (Híbrido/Solo IA/Solo Flujos) — ver ChatbotModule.tsx y
+// BotEngineService.processIncomingMessage.
+const VALID_BOT_MODES: BotMode[] = ['flow_only', 'ai_only', 'hybrid'];
+router.put('/bot-mode', async (req: Request, res: Response) => {
+  const { mode } = req.body;
+  if (typeof mode !== 'string' || !VALID_BOT_MODES.includes(mode as BotMode)) {
+    return res.status(400).json({ error: `El campo "mode" debe ser uno de: ${VALID_BOT_MODES.join(', ')}` });
+  }
+
+  try {
+    const user = await AuthService.setBotMode(req.user!.id, mode as BotMode);
+    res.json({ botMode: user?.botMode ?? mode });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar el modo de respuesta del bot' });
+  }
+});
+
 // Lista propia y separada de "conversations" para el panel "Bot habilitado por contacto" — ver
 // comentario de la tabla bot_contacts en db.ts. Un grupo es una sola fila acá.
 router.get('/bot-contacts', async (req: Request, res: Response) => {
@@ -320,6 +370,27 @@ router.post('/bot-contacts', async (req: Request, res: Response) => {
   }
 });
 
+// Importación masiva desde CSV/Excel ya parseado en el frontend (ver BulkImportPreview.tsx) —
+// crea o actualiza (matcheando por teléfono) en bot_contacts, reusando BotContactService.addManual
+// fila por fila para no duplicar la lógica de upsert/normalización de JID.
+const BULK_IMPORT_MAX_ROWS = 2000;
+router.post('/bot-contacts/bulk-import', async (req: Request, res: Response) => {
+  const { contacts } = req.body;
+  if (!Array.isArray(contacts)) {
+    return res.status(400).json({ error: 'El campo "contacts" es obligatorio y debe ser un arreglo' });
+  }
+  if (contacts.length > BULK_IMPORT_MAX_ROWS) {
+    return res.status(400).json({ error: `Máximo ${BULK_IMPORT_MAX_ROWS} contactos por importación` });
+  }
+
+  try {
+    const result = await BotContactService.bulkImport(req.user!.id, contacts);
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al importar los contactos' });
+  }
+});
+
 // Transcribe un audio por su identificador de mensaje a demanda vía Baileys
 router.post('/transcribe-audio', async (req: Request, res: Response) => {
   try {
@@ -333,6 +404,98 @@ router.post('/transcribe-audio', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('❌ [WhatsApp Route] Error en /transcribe-audio:', error?.message || error);
     res.status(500).json({ error: error.message || 'Error al transcribir audio' });
+  }
+});
+
+// Asesores humanos (panel: botón "Asesores" en ChatbotModule.tsx, AdvisorManagerModal.tsx) — a
+// quién deriva el bot una conversación cuando decide que necesita intervención humana. Ver
+// AdvisorService para la selección equitativa (pickNextAdvisor); estos endpoints solo
+// administran el padrón (alta/edición/baja/reseteo de contadores).
+router.get('/advisors', async (req: Request, res: Response) => {
+  try {
+    res.json(await AdvisorService.list(req.user!.id));
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al obtener los asesores' });
+  }
+});
+
+router.post('/advisors', async (req: Request, res: Response) => {
+  const { name, phone } = req.body;
+  if (typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: 'El campo "name" es obligatorio' });
+  }
+  if (typeof phone !== 'string' || !phone.trim()) {
+    return res.status(400).json({ error: 'El campo "phone" es obligatorio' });
+  }
+  const cleanPhone = phone.replace(/[^0-9]/g, '');
+  if (cleanPhone.length < 8) {
+    return res.status(400).json({ error: 'El número de teléfono no es válido' });
+  }
+
+  try {
+    const advisor = await AdvisorService.create(req.user!.id, name.trim(), cleanPhone);
+    res.json(advisor);
+  } catch (error: any) {
+    if (error?.code === '23505') {
+      return res.status(409).json({ error: 'Ya existe un asesor con ese número de teléfono' });
+    }
+    res.status(500).json({ error: error.message || 'Error al crear el asesor' });
+  }
+});
+
+router.put('/advisors/:id', async (req: Request, res: Response) => {
+  const { name, phone, isActive } = req.body;
+  if (name !== undefined && (typeof name !== 'string' || !name.trim())) {
+    return res.status(400).json({ error: 'El campo "name" no puede quedar vacío' });
+  }
+  if (phone !== undefined && (typeof phone !== 'string' || !phone.trim())) {
+    return res.status(400).json({ error: 'El campo "phone" no puede quedar vacío' });
+  }
+  if (isActive !== undefined && typeof isActive !== 'boolean') {
+    return res.status(400).json({ error: 'El campo "isActive" debe ser booleano' });
+  }
+
+  let cleanPhone: string | undefined;
+  if (phone !== undefined) {
+    const digits: string = phone.replace(/[^0-9]/g, '');
+    if (digits.length < 8) {
+      return res.status(400).json({ error: 'El número de teléfono no es válido' });
+    }
+    cleanPhone = digits;
+  }
+
+  try {
+    const advisor = await AdvisorService.update(req.user!.id, Number(req.params.id), {
+      name: name?.trim(),
+      phone: cleanPhone,
+      isActive
+    });
+    if (!advisor) return res.status(404).json({ error: 'Asesor no encontrado' });
+    res.json(advisor);
+  } catch (error: any) {
+    if (error?.code === '23505') {
+      return res.status(409).json({ error: 'Ya existe un asesor con ese número de teléfono' });
+    }
+    res.status(500).json({ error: error.message || 'Error al actualizar el asesor' });
+  }
+});
+
+router.delete('/advisors/:id', async (req: Request, res: Response) => {
+  try {
+    const deleted = await AdvisorService.delete(req.user!.id, Number(req.params.id));
+    if (!deleted) return res.status(404).json({ error: 'Asesor no encontrado' });
+    res.json({ status: 'deleted' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al borrar el asesor' });
+  }
+});
+
+router.post('/advisors/reset-counts', async (req: Request, res: Response) => {
+  try {
+    await AdvisorService.resetCounts(req.user!.id);
+    res.json({ status: 'ok' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al resetear los contadores' });
   }
 });
 

@@ -267,6 +267,43 @@ const SCHEMA_SQL = `
   END $$;
 
   CREATE INDEX IF NOT EXISTS idx_bot_contacts_user_id ON bot_contacts(user_id, owner_jid, last_activity DESC);
+
+  -- "Delay humanizado" (panel: sección "replyDelay" de ChatbotModule): espera un tiempo aleatorio
+  -- entre bot_reply_delay_min_ms y bot_reply_delay_max_ms antes de mandar la respuesta del bot,
+  -- para que no se sienta instantánea/robótica — ver WhatsappService.handleIncomingMessage.
+  -- Apagado por default para no cambiarle el comportamiento a nadie que no lo configure.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_reply_delay_enabled BOOLEAN NOT NULL DEFAULT false;
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_reply_delay_min_ms INT NOT NULL DEFAULT 1500;
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_reply_delay_max_ms INT NOT NULL DEFAULT 4000;
+
+  -- Modo de respuesta del bot (selector "Híbrido/Solo IA/Solo Flujos" en ChatbotModule): con qué
+  -- sistema responde — el flujo visual, el Agente IA, o ambos (flujo primero, IA de respaldo si
+  -- no matchea). Ver BotEngineService.processIncomingMessage. Default 'hybrid' = comportamiento
+  -- histórico, no cambia nada para quien no toque el selector.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_mode TEXT NOT NULL DEFAULT 'hybrid';
+  DO $$
+  BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_bot_mode_check') THEN
+      ALTER TABLE users ADD CONSTRAINT users_bot_mode_check CHECK (bot_mode IN ('flow_only', 'ai_only', 'hybrid'));
+    END IF;
+  END $$;
+
+  -- Asesores humanos (panel: botón "Asesores" en ChatbotModule, AdvisorManagerModal.tsx): a quién
+  -- deriva el bot una conversación cuando decide que necesita intervención de una persona. La
+  -- selección de a cuál le toca (de forma equitativa) vive en AdvisorService.pickNextAdvisor.
+  CREATE TABLE IF NOT EXISTS advisors (
+    id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    handoff_count INT NOT NULL DEFAULT 0,
+    last_handoff_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (user_id, phone)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_advisors_user_id ON advisors(user_id);
 `;
 
 /**
