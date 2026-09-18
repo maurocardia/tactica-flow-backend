@@ -267,6 +267,78 @@ const SCHEMA_SQL = `
   END $$;
 
   CREATE INDEX IF NOT EXISTS idx_bot_contacts_user_id ON bot_contacts(user_id, owner_jid, last_activity DESC);
+
+  -- Blacklist (pestaña nueva junto a Contactos/Grupos en ContactBotSwitchesModal.tsx): un
+  -- contacto acá NUNCA recibe respuesta del bot, sin importar "Responder a todos" ni ningún otro
+  -- switch — ver el chequeo al principio de WhatsappService.handleIncomingMessage. Se reutiliza
+  -- bot_contacts en vez de una tabla aparte porque ya trae toda la infraestructura de alta manual/
+  -- búsqueda por nombre/JID real; is_blacklisted=true implica bot_enabled=false siempre.
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS is_blacklisted BOOLEAN NOT NULL DEFAULT false;
+
+  -- "Delay humanizado" (panel: sección "replyDelay" de ChatbotModule): espera un tiempo aleatorio
+  -- entre bot_reply_delay_min_ms y bot_reply_delay_max_ms antes de mandar la respuesta del bot,
+  -- para que no se sienta instantánea/robótica — ver WhatsappService.handleIncomingMessage.
+  -- Apagado por default para no cambiarle el comportamiento a nadie que no lo configure.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_reply_delay_enabled BOOLEAN NOT NULL DEFAULT false;
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_reply_delay_min_ms INT NOT NULL DEFAULT 1500;
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_reply_delay_max_ms INT NOT NULL DEFAULT 4000;
+
+  -- Modo de respuesta del bot (selector "Híbrido/Solo IA/Solo Flujos" en ChatbotModule): con qué
+  -- sistema responde — el flujo visual, el Agente IA, o ambos (flujo primero, IA de respaldo si
+  -- no matchea). Ver BotEngineService.processIncomingMessage. Default 'hybrid' = comportamiento
+  -- histórico, no cambia nada para quien no toque el selector.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_mode TEXT NOT NULL DEFAULT 'hybrid';
+  DO $$
+  BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_bot_mode_check') THEN
+      ALTER TABLE users ADD CONSTRAINT users_bot_mode_check CHECK (bot_mode IN ('flow_only', 'ai_only', 'hybrid'));
+    END IF;
+  END $$;
+
+  -- Asesores humanos (panel: botón "Asesores" en ChatbotModule, AdvisorManagerModal.tsx): a quién
+  -- deriva el bot una conversación cuando decide que necesita intervención de una persona. La
+  -- selección de a cuál le toca (de forma equitativa) vive en AdvisorService.pickNextAdvisor.
+  CREATE TABLE IF NOT EXISTS advisors (
+    id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    handoff_count INT NOT NULL DEFAULT 0,
+    last_handoff_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (user_id, phone)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_advisors_user_id ON advisors(user_id);
+
+  -- Pausa del bot por derivación a asesor (bloque "Contactar Asesor" del diagramador de flujos).
+  -- Separado a propósito de bot_enabled (switch manual del panel) y de is_blacklisted (bloqueo
+  -- permanente): esto es una pausa TEMPORAL y automática mientras un asesor humano atiende la
+  -- conversación — ver HandoffService y el chequeo en WhatsappService.handleIncomingMessage.
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS handoff_advisor_id INT REFERENCES advisors(id) ON DELETE SET NULL;
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS handoff_started_at TIMESTAMPTZ;
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS handoff_paused_until TIMESTAMPTZ;
+  CREATE INDEX IF NOT EXISTS idx_bot_contacts_handoff ON bot_contacts(user_id, owner_jid, jid, handoff_paused_until);
+
+  -- Duración por defecto de la pausa tras un handoff (minutos). 0 = hasta reactivación manual
+  -- desde el panel (botón "Reactivar bot" en ContactBotSwitchesModal).
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS handoff_pause_minutes INT NOT NULL DEFAULT 120;
+
+  -- Adjuntos multimedia de los bloques de flujo (Enviar Imagen/Video/Audio/Documento). Los bytes
+  -- se guardan acá y se cargan en proceso para pasárselos a Baileys como Buffer — así no hace
+  -- falta exponer una URL pública ni que el backend sea alcanzable desde internet.
+  CREATE TABLE IF NOT EXISTS flow_media_assets (
+    id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('image','video','audio','document')),
+    file_name TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size_bytes INT NOT NULL DEFAULT 0,
+    data BYTEA NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS idx_flow_media_assets_user_id ON flow_media_assets(user_id, created_at DESC);
 `;
 
 /**

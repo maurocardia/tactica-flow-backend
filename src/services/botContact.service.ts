@@ -9,7 +9,17 @@ export interface BotContact {
   name: string;
   isGroup: boolean;
   botEnabled: boolean;
+  isBlacklisted: boolean;
   lastActivity: string;
+  handoffAdvisorId: number | null;
+  handoffPausedUntil: string | null;
+}
+
+export interface GatingFlags {
+  isBlacklisted: boolean;
+  botEnabled: boolean;
+  handoffPausedUntil: Date | null;
+  handoffAdvisorId: number | null;
 }
 
 function mapRow(row: any): BotContact {
@@ -21,7 +31,10 @@ function mapRow(row: any): BotContact {
     name: row.name,
     isGroup: row.is_group,
     botEnabled: row.bot_enabled,
+    isBlacklisted: row.is_blacklisted,
     lastActivity: new Date(row.last_activity).toISOString(),
+    handoffAdvisorId: row.handoff_advisor_id ?? null,
+    handoffPausedUntil: row.handoff_paused_until ? new Date(row.handoff_paused_until).toISOString() : null,
   };
 }
 
@@ -124,6 +137,95 @@ export class BotContactService {
     return rows.length > 0 ? rows[0].bot_enabled : false;
   }
 
+  /**
+   * Blacklist (pestaña del panel junto a Contactos/Grupos): gana por encima de CUALQUIER otro
+   * switch — ver el chequeo al principio de WhatsappService.handleIncomingMessage, que se fija
+   * esto ANTES que "Responder a todos" o el switch normal del contacto.
+   */
+  static async isBlacklisted(userId: number, jid: string): Promise<boolean> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query(
+      'SELECT is_blacklisted FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND jid = $3',
+      [userId, ownerJid, jid]
+    );
+    return rows.length > 0 ? rows[0].is_blacklisted : false;
+  }
+
+  /** Bloquea/desbloquea una fila ya existente — is_blacklisted=true siempre apaga bot_enabled. */
+  static async setBlacklisted(id: number, blacklisted: boolean): Promise<BotContact | null> {
+    const { rows } = await db.query(
+      `UPDATE bot_contacts
+       SET is_blacklisted = $1, bot_enabled = CASE WHEN $1 THEN false ELSE bot_enabled END
+       WHERE id = $2 RETURNING *`,
+      [blacklisted, id]
+    );
+    return rows.length > 0 ? mapRow(rows[0]) : null;
+  }
+
+  /** Alta directa a la blacklist (número que nunca le escribió al bot pero se quiere bloquear igual). */
+  static async addToBlacklist(userId: number, jid: string, name: string): Promise<BotContact> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query(
+      `INSERT INTO bot_contacts (user_id, owner_jid, jid, name, is_group, bot_enabled, is_blacklisted)
+       VALUES ($1, $2, $3, $4, false, false, true)
+       ON CONFLICT (user_id, owner_jid, jid) DO UPDATE SET is_blacklisted = true, bot_enabled = false
+       RETURNING *`,
+      [userId, ownerJid, jid, name]
+    );
+    return mapRow(rows[0]);
+  }
+
+  /**
+   * Una sola consulta con TODO lo que el camino caliente de un mensaje entrante necesita chequear
+   * antes de dejar responder al bot (blacklist, switch por contacto, pausa por handoff) — antes
+   * eran dos round-trips separados (isBlacklisted + isEnabled); agregar la pausa como una tercera
+   * consulta habría sumado latencia a CADA mensaje. Si la fila todavía no existe (contacto nuevo,
+   * el upsert de handleIncomingMessage es fire-and-forget y puede no haber terminado todavía),
+   * devuelve defaults seguros: no bloqueado, no habilitado, sin pausa.
+   */
+  static async getGatingFlags(userId: number, jid: string): Promise<GatingFlags> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query(
+      `SELECT is_blacklisted, bot_enabled, handoff_paused_until, handoff_advisor_id
+       FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
+      [userId, ownerJid, jid]
+    );
+    if (rows.length === 0) {
+      return { isBlacklisted: false, botEnabled: false, handoffPausedUntil: null, handoffAdvisorId: null };
+    }
+    const row = rows[0];
+    return {
+      isBlacklisted: row.is_blacklisted,
+      botEnabled: row.bot_enabled,
+      handoffPausedUntil: row.handoff_paused_until ? new Date(row.handoff_paused_until) : null,
+      handoffAdvisorId: row.handoff_advisor_id ?? null,
+    };
+  }
+
+  /** Pausa el bot para esta conversación puntual tras derivarla a un asesor (bloque "Contactar
+   * Asesor" del flujo) — ver HandoffService. `minutes` 0/null pausa hasta reactivación manual
+   * (handoff_paused_until queda en una fecha muy lejana en vez de NULL, para no confundirla con
+   * "nunca hubo un handoff"). */
+  static async setHandoffPause(userId: number, jid: string, advisorId: number | null, minutes: number | null): Promise<void> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const pausedUntil = minutes && minutes > 0 ? new Date(Date.now() + minutes * 60 * 1000) : new Date('9999-01-01T00:00:00Z');
+    await db.query(
+      `UPDATE bot_contacts
+       SET handoff_advisor_id = $1, handoff_started_at = now(), handoff_paused_until = $2
+       WHERE user_id = $3 AND owner_jid = $4 AND jid = $5`,
+      [advisorId, pausedUntil, userId, ownerJid, jid]
+    );
+  }
+
+  /** Botón "Reactivar bot" del panel — vuelve a dejar que el bot le responda a este contacto. */
+  static async clearHandoffPause(id: number): Promise<BotContact | null> {
+    const { rows } = await db.query(
+      `UPDATE bot_contacts SET handoff_paused_until = NULL WHERE id = $1 RETURNING *`,
+      [id]
+    );
+    return rows.length > 0 ? mapRow(rows[0]) : null;
+  }
+
   /** Borra un contacto/grupo puntual de la lista — botón "X" del panel. Solo afecta bot_contacts. */
   static async delete(userId: number, id: number): Promise<boolean> {
     const { rowCount } = await db.query('DELETE FROM bot_contacts WHERE id = $1 AND user_id = $2', [id, userId]);
@@ -141,5 +243,53 @@ export class BotContactService {
       [userId, ownerJid, jid, name, enabled]
     );
     return mapRow(rows[0]);
+  }
+
+  /**
+   * Importación masiva desde un CSV/Excel ya parseado en el frontend (ver BulkImportPreview.tsx):
+   * fila por fila, reusa addManual() (mismo upsert por jid que ya usa el alta manual) para no
+   * duplicar la normalización — solo agrega el conteo de nuevos vs. actualizados comparando
+   * contra la lista existente ANTES de arrancar (si dos filas del archivo repiten el mismo
+   * teléfono, la segunda ya cuenta como "actualización" en vez de otro "nuevo").
+   */
+  static async bulkImport(
+    userId: number,
+    contacts: { phone: string; name?: string; enabled: boolean }[]
+  ): Promise<{ created: number; updated: number; errors: number; errorDetails: string[] }> {
+    const existingJids = new Set((await this.list(userId)).map((c) => c.jid));
+    let created = 0;
+    let updated = 0;
+    let errors = 0;
+    const errorDetails: string[] = [];
+
+    for (const row of contacts) {
+      try {
+        const cleanPhone = String(row?.phone ?? '').replace(/[^0-9]/g, '');
+        if (cleanPhone.length < 8) {
+          errors++;
+          errorDetails.push(`Teléfono inválido: "${row?.phone ?? ''}"`);
+          continue;
+        }
+        if (typeof row?.enabled !== 'boolean') {
+          errors++;
+          errorDetails.push(`${cleanPhone}: falta el estado (enabled)`);
+          continue;
+        }
+        const jid = `${cleanPhone}@s.whatsapp.net`;
+        const wasExisting = existingJids.has(jid);
+        await this.addManual(userId, jid, row.name?.trim() || cleanPhone, row.enabled);
+        if (wasExisting) {
+          updated++;
+        } else {
+          created++;
+          existingJids.add(jid);
+        }
+      } catch (err) {
+        errors++;
+        errorDetails.push(`${row?.phone ?? '?'}: ${err instanceof Error ? err.message : 'error desconocido'}`);
+      }
+    }
+
+    return { created, updated, errors, errorDetails };
   }
 }

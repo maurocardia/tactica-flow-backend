@@ -9,6 +9,10 @@ import { AuthService } from './auth.service.js';
 import { AIService } from './ai.service.js';
 import { KnowledgeBaseService } from './knowledgeBase.service.js';
 import { usePostgresAuthState } from './postgresAuthState.js';
+import { FlowMediaService } from './flowMedia.service.js';
+import { HandoffService } from './handoff.service.js';
+import { FlowEngineService } from './flowEngine.service.js';
+import { FlowOutboundMessage } from '../types/flow.js';
 
 export type WhatsappConnectionStatus = 'disconnected' | 'connecting' | 'qr_ready' | 'connected';
 
@@ -111,6 +115,138 @@ async function sendWithRetry(
     }
   }
 }
+
+// Arma el `content` real de Baileys para un mensaje de tipo 'media' del flujo — carga los bytes
+// desde flow_media_assets (adjunto subido) o pasa la URL tal cual (adjunto por URL, sin infra
+// propia). Devuelve null si el nodo quedó mal configurado (sin adjunto todavía), para que el
+// llamador decida cómo degradar en vez de reventar el envío.
+async function resolveMediaContent(
+  userId: number,
+  message: Extract<FlowOutboundMessage, { kind: 'media' }>
+): Promise<Parameters<WASocket['sendMessage']>[1] | null> {
+  let uploadSource: Buffer | { url: string } | null = null;
+  let mimeType = message.mimeType;
+  let fileName = message.fileName;
+
+  if (message.source === 'upload' && message.assetId) {
+    const asset = await FlowMediaService.getByIdWithData(userId, message.assetId);
+    if (!asset) return null;
+    uploadSource = asset.data;
+    mimeType = asset.mimeType;
+    fileName = asset.fileName;
+  } else if (message.source === 'url' && message.url) {
+    uploadSource = { url: message.url };
+  }
+  if (!uploadSource) return null;
+
+  switch (message.mediaKind) {
+    case 'image':
+      return { image: uploadSource, caption: message.caption };
+    case 'video':
+      return { video: uploadSource, caption: message.caption, gifPlayback: message.gifPlayback };
+    case 'audio':
+      // Baileys/WhatsApp no soporta `caption` en audio — FlowEngineService ya manda el texto del
+      // nodo como mensaje aparte antes de este, ver buildNodeChain.
+      return { audio: uploadSource, ptt: message.ptt };
+    case 'document':
+      return {
+        document: uploadSource,
+        mimetype: mimeType || 'application/octet-stream',
+        fileName: fileName || 'documento',
+        caption: message.caption
+      };
+    default:
+      return null;
+  }
+}
+
+// Manda la lista de mensajes que armó el flujo (texto/media/delay), en orden — reemplaza el envío
+// de un único `{ text }` fijo que había antes. La mención "@fulano" de grupos va solo en el
+// PRIMER mensaje de texto (antes solo había uno, así que no cambia el comportamiento existente).
+async function sendFlowMessages(
+  userId: number,
+  socket: WASocket,
+  remoteJid: string,
+  messages: FlowOutboundMessage[],
+  opts: { isGroup: boolean; participantJid?: string }
+): Promise<void> {
+  let mentionedFirstText = false;
+
+  for (const message of messages) {
+    if (message.kind === 'delay') {
+      const seconds = Math.min(Math.max(message.seconds, 0), 30);
+      try {
+        await socket.sendPresenceUpdate('composing', remoteJid);
+      } catch {}
+      await new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+      try {
+        await socket.sendPresenceUpdate('paused', remoteJid);
+      } catch {}
+      continue;
+    }
+
+    if (message.kind === 'text') {
+      if (opts.isGroup && opts.participantJid && !mentionedFirstText) {
+        mentionedFirstText = true;
+        await sendWithRetry(socket, remoteJid, {
+          text: `@${opts.participantJid.split('@')[0]} ${message.text}`,
+          mentions: [opts.participantJid]
+        });
+      } else {
+        await sendWithRetry(socket, remoteJid, { text: message.text });
+      }
+      continue;
+    }
+
+    // message.kind === 'media' — si falla resolver o mandar el adjunto, degrada a texto en vez de
+    // cortar el resto de la cadena de mensajes.
+    try {
+      const mediaContent = await resolveMediaContent(userId, message);
+      if (!mediaContent) throw new Error('El nodo no tiene un adjunto configurado.');
+      await sendWithRetry(socket, remoteJid, mediaContent);
+    } catch (err) {
+      console.error(`⚠️ [WhatsApp] No se pudo enviar el adjunto (${message.mediaKind}), se degrada a texto:`, err);
+      const fallbackText = message.caption || `[No se pudo enviar el adjunto: ${message.fileName || message.mediaKind}]`;
+      await sendWithRetry(socket, remoteJid, { text: fallbackText });
+    }
+  }
+}
+
+// Bloques interactivos del editor de flujos (Menú/Respuestas/Lista) pueden configurar un "tiempo
+// de espera" — si el cliente no responde a tiempo, FlowEngineService arma un temporizador real y
+// llama acá para mandarle el mensaje de "sin respuesta" por su cuenta, sin que haya escrito nada
+// (ver flowEngine.service.ts: scheduleTimeout / setProactiveSender). Se registra una sola vez acá
+// porque este es el único módulo con acceso a `sessions` (el socket real de Baileys).
+FlowEngineService.setProactiveSender(async (ctx) => {
+  const session = sessions.get(ctx.userId);
+  if (!session || session.status !== 'connected') return;
+
+  // Mismo chequeo que handleIncomingMessage antes de responder — si el usuario bloqueó al
+  // contacto, apagó el bot, o sigue en una pausa de handoff DESDE que se armó este temporizador,
+  // no corresponde mandarle nada igual.
+  const gating = await BotContactService.getGatingFlags(ctx.userId, ctx.botContactJid);
+  if (gating.isBlacklisted) return;
+  if (gating.handoffPausedUntil && gating.handoffPausedUntil > new Date()) return;
+  const user = await AuthService.getUserById(ctx.userId);
+  if (!user?.botEnabled) return;
+  if (!user.botReplyToAll && !gating.botEnabled) return;
+
+  await sendFlowMessages(ctx.userId, session.socket, ctx.remoteJid, ctx.messages, {
+    isGroup: ctx.isGroup,
+    participantJid: ctx.participantJid
+  });
+
+  const conversation = await ConversationService.findOrCreateByPhone(ctx.phone, ctx.contactName, ctx.userId, ctx.groupName ?? null);
+  const replyText = ctx.messages
+    .filter((m): m is Extract<FlowOutboundMessage, { kind: 'text' }> => m.kind === 'text')
+    .map((m) => m.text)
+    .join('\n\n');
+  const outbound = await ConversationService.addMessage(conversation.id, 'bot', replyText, []);
+  if (outbound) {
+    io.to(`chat_${conversation.id}`).emit('new_message', outbound.message);
+    io.emit('conversation_updated', outbound.conversation);
+  }
+});
 
 const connectingPromises = new Map<number, Promise<{ status: WhatsappConnectionStatus }>>();
 
@@ -434,7 +570,16 @@ return connectPromise;
     const isGroup = remoteJid.endsWith('@g.us');
     const user = await AuthService.getUserById(userId);
 
-    let text: string | undefined = msg.message?.conversation || msg.message?.extendedTextMessage?.text;
+    // buttonsResponseMessage/listResponseMessage: hoy el flujo nunca manda botones/lista NATIVOS
+    // (Baileys 6.7.24 no tiene cómo — ver renderInteractiveAsText en flowEngine.service.ts, que en
+    // cambio simula "Respuestas"/"Enviar Lista" como texto numerado), pero se extraen igual de
+    // forma defensiva por si alguna vez llega una respuesta de ese tipo desde otra fuente.
+    let text: string | undefined =
+      msg.message?.conversation ||
+      msg.message?.extendedTextMessage?.text ||
+      msg.message?.buttonsResponseMessage?.selectedDisplayText ||
+      msg.message?.listResponseMessage?.title ||
+      msg.message?.listResponseMessage?.singleSelectReply?.selectedRowId;
 
     // Detectar y transcribir notas de voz o audios entrantes de WhatsApp con Baileys + Gemini
     const audioMessage = msg.message?.audioMessage;
@@ -542,6 +687,21 @@ return connectPromise;
       console.warn('[WhatsApp] Error cancelando programados al recibir respuesta:', err);
     }
 
+    // Una sola consulta con todo lo que hace falta chequear antes de dejar responder al bot (ver
+    // BotContactService.getGatingFlags) — evita sumar un tercer round-trip por mensaje solo para
+    // la pausa por handoff.
+    const gating = await BotContactService.getGatingFlags(userId, botContactJid);
+
+    // Blacklist: gana por encima de CUALQUIER otro switch (Responder a todos, bot habilitado,
+    // modo de respuesta, etc.) — un contacto en esta lista nunca recibe respuesta del bot, sin
+    // excepción. Por eso se chequea primero, antes que nada más.
+    if (gating.isBlacklisted) return;
+
+    // Pausa por derivación a un asesor humano (bloque "Contactar Asesor" del flujo) — mientras
+    // esté pausado, el bot no le responde a este contacto puntual, sin importar ningún otro
+    // switch, hasta que venza el tiempo configurado o se reactive a mano desde el panel.
+    if (gating.handoffPausedUntil && gating.handoffPausedUntil > new Date()) return;
+
     if (!user?.botEnabled) return;
 
     // "Responder a todos" vs "Responder a contactos seleccionados": con el modo "todos" activado
@@ -549,10 +709,7 @@ return connectPromise;
     // de siempre — el switch vive en bot_contacts (no en conversations), arranca apagado para
     // contactos nuevos (salvo que "Activar bot para contactos nuevos" esté prendido) y queda
     // guardado tal cual entre sesiones de Baileys (no se resetea solo).
-    if (!user.botReplyToAll) {
-      const botContactEnabled = await BotContactService.isEnabled(userId, botContactJid);
-      if (!botContactEnabled) return;
-    }
+    if (!user.botReplyToAll && !gating.botEnabled) return;
 
     const botResult = await BotEngineService.processIncomingMessage(
       text,
@@ -563,18 +720,31 @@ return connectPromise;
       user.aiCustomInstructions,
       user.aiProvider,
       user.aiModel,
-      plainContactName
+      plainContactName,
+      user.botMode,
+      {
+        userId,
+        remoteJid,
+        botContactJid,
+        phone,
+        isGroup,
+        participantJid,
+        contactName: plainContactName,
+        groupName
+      }
     );
     if (!botResult) return;
 
-    if (isGroup && participantJid) {
-      await sendWithRetry(socket, remoteJid, {
-        text: `@${participantJid.split('@')[0]} ${botResult.replyText}`,
-        mentions: [participantJid]
-      });
-    } else {
-      await sendWithRetry(socket, remoteJid, { text: botResult.replyText });
+    // "Delay humanizado": espera un tiempo aleatorio entre min/max antes de mandar la respuesta,
+    // para que no se sienta instantánea/robótica — ver ChatbotModule.tsx (sección "replyDelay").
+    if (user.botReplyDelayEnabled) {
+      const min = Math.min(user.botReplyDelayMinMs, user.botReplyDelayMaxMs);
+      const max = Math.max(user.botReplyDelayMinMs, user.botReplyDelayMaxMs);
+      const delayMs = min + Math.random() * (max - min);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
+
+    await sendFlowMessages(userId, socket, remoteJid, botResult.messages, { isGroup, participantJid });
 
     try {
       if (msg.key) {
@@ -586,6 +756,34 @@ return connectPromise;
     if (outbound) {
       io.to(`chat_${conversation.id}`).emit('new_message', outbound.message);
       io.emit('conversation_updated', outbound.conversation);
+    }
+
+    // Bloque "Contactar Asesor" del flujo: elige/notifica al asesor y pausa el bot para esta
+    // conversación puntual — ver HandoffService. Va DESPUÉS de mandar la respuesta al cliente
+    // (nunca debe demorarla ni impedirla si algo acá falla).
+    if (botResult.handoff) {
+      try {
+        const customerPhoneDigits = isGroup ? (participantJid ? participantJid.split('@')[0] : phone) : phone;
+        const handoffResult = await HandoffService.execute({
+          userId,
+          socket,
+          botContactJid,
+          customerPhoneKey: phone,
+          customerPhoneDigits,
+          customerName: plainContactName,
+          isGroup,
+          groupName,
+          lastMessageText: text,
+          request: botResult.handoff
+        });
+        console.log(
+          handoffResult.advisor
+            ? `🔀 [WhatsApp] Conversación derivada a "${handoffResult.advisor.name}" (asesor notificado=${handoffResult.notified}).`
+            : '⚠️ [WhatsApp] Se pidió derivar a un asesor pero no hay ninguno activo — no se pausó el bot.'
+        );
+      } catch (err) {
+        console.error('❌ [WhatsApp] Error ejecutando la derivación a asesor:', err);
+      }
     }
   }
 

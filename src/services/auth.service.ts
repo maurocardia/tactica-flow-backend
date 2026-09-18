@@ -86,9 +86,15 @@ export interface User {
   aiPromptConfig: AiPromptConfig | null;
   botEnabledForNewContacts: boolean;
   botReplyToAll: boolean;
+  botReplyDelayEnabled: boolean;
+  botReplyDelayMinMs: number;
+  botReplyDelayMaxMs: number;
+  botMode: BotMode;
   createdAt: string;
   updatedAt: string;
 }
+
+export type BotMode = 'flow_only' | 'ai_only' | 'hybrid';
 
 function mapUserRow(row: any): User {
   return {
@@ -107,6 +113,10 @@ function mapUserRow(row: any): User {
     aiPromptConfig: row.ai_prompt_config ?? null,
     botEnabledForNewContacts: row.bot_enabled_for_new_contacts,
     botReplyToAll: row.bot_reply_to_all,
+    botReplyDelayEnabled: row.bot_reply_delay_enabled,
+    botReplyDelayMinMs: row.bot_reply_delay_min_ms,
+    botReplyDelayMaxMs: row.bot_reply_delay_max_ms,
+    botMode: row.bot_mode,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -202,6 +212,36 @@ export class AuthService {
     const { rows } = await db.query(
       `UPDATE users SET bot_reply_to_all = $1, updated_at = now() WHERE id = $2 RETURNING *`,
       [enabled, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  // "Delay humanizado" (ver ChatbotModule.tsx, sección "replyDelay") — minMs/maxMs son opcionales
+  // para poder prender/apagar el toggle sin tener que resendear el rango cada vez.
+  static async setBotReplyDelay(
+    id: number,
+    { enabled, minMs, maxMs }: { enabled: boolean; minMs?: number; maxMs?: number }
+  ): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users
+       SET bot_reply_delay_enabled = $1,
+           bot_reply_delay_min_ms = COALESCE($2, bot_reply_delay_min_ms),
+           bot_reply_delay_max_ms = COALESCE($3, bot_reply_delay_max_ms),
+           updated_at = now()
+       WHERE id = $4 RETURNING *`,
+      [enabled, minMs ?? null, maxMs ?? null, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  // Modo de respuesta del bot (ver ChatbotModule.tsx, selector Híbrido/Solo IA/Solo Flujos) — a
+  // qué sistema le toca responder, ver BotEngineService.processIncomingMessage.
+  static async setBotMode(id: number, mode: BotMode): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET bot_mode = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [mode, id]
     );
     if (rows.length === 0) return null;
     return mapUserRow(rows[0]);
