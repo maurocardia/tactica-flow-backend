@@ -27,6 +27,14 @@ export interface HandoffContext {
   groupName?: string | null;
   lastMessageText: string;
   request: FlowHandoffRequest;
+  /**
+   * Cuando la derivación (elegir asesor + notificarlo con el resumen de IA + contar) ya se hizo
+   * afuera de este servicio — ver AdvisorService.handoffConversation, usada por la regla legacy
+   * HANDOFF y por la tool handoff_to_advisor (Issue #30 [BE-049]) — execute() solo pausa el bot
+   * para esta conversación con el asesor ya resuelto, sin volver a elegir/notificar/contar (eso
+   * duplicaría el mensaje al asesor y el conteo del round-robin).
+   */
+  resolvedAdvisor?: Advisor;
 }
 
 export interface HandoffResult {
@@ -49,7 +57,20 @@ const DEFAULT_NOTIFY_TEMPLATE = [
 
 export class HandoffService {
   static async execute(ctx: HandoffContext): Promise<HandoffResult> {
+    // Derivación ya resuelta afuera (regla legacy HANDOFF / tool de IA, ver AdvisorService.
+    // handoffConversation) — solo falta pausar el bot para esta conversación puntual.
+    if (ctx.resolvedAdvisor) {
+      try {
+        await BotContactService.setHandoffPause(ctx.userId, ctx.botContactJid, ctx.resolvedAdvisor.id, ctx.request.pauseMinutes);
+      } catch (err) {
+        console.error('❌ [HandoffService] Error pausando el bot para esta conversación:', err);
+      }
+      FlowEngineService.clearUserState(ctx.customerPhoneKey);
+      return { advisor: ctx.resolvedAdvisor, notified: true };
+    }
+
     let advisor: Advisor | null = null;
+    let alreadyCounted = false;
     try {
       if (ctx.request.advisorMode === 'fixed' && ctx.request.advisorId) {
         const fixed = await AdvisorService.getById(ctx.userId, ctx.request.advisorId);
@@ -57,7 +78,10 @@ export class HandoffService {
         // asesor" en vez de fallar — ver el caso borde de abajo.
         advisor = fixed && fixed.isActive ? fixed : null;
       } else {
+        // pickNextAdvisor ya cuenta la derivación de forma atómica al elegir — a diferencia del
+        // modo "fijo" (getById no cuenta nada), no hace falta un recordHandoff aparte para este.
         advisor = await AdvisorService.pickNextAdvisor(ctx.userId);
+        alreadyCounted = true;
       }
     } catch (err) {
       console.error('❌ [HandoffService] Error eligiendo asesor:', err);
@@ -72,10 +96,12 @@ export class HandoffService {
       return { advisor: null, notified: false };
     }
 
-    try {
-      await AdvisorService.recordHandoff(advisor.id);
-    } catch (err) {
-      console.error('❌ [HandoffService] Error registrando la derivación:', err);
+    if (!alreadyCounted) {
+      try {
+        await AdvisorService.recordHandoff(advisor.id);
+      } catch (err) {
+        console.error('❌ [HandoffService] Error registrando la derivación:', err);
+      }
     }
 
     // Notificar al asesor es best-effort: si falla (número inválido, sin WhatsApp, etc.), el

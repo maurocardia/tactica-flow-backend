@@ -4,6 +4,7 @@ import { KeywordRuleService } from './keywordRule.service.js';
 import { KnowledgeBaseService } from './knowledgeBase.service.js';
 import { FlowEngineService, FlowTimeoutSendContext } from './flowEngine.service.js';
 import { FlowOutboundMessage, FlowHandoffRequest } from '../types/flow.js';
+import { AdvisorService, Advisor } from './advisor.service.js';
 
 export type { KeywordRule } from './keywordRule.service.js';
 
@@ -22,13 +23,22 @@ export class BotEngineService {
     aiModel: string = '',
     contactName: string = 'Cliente',
     botMode: 'flow_only' | 'ai_only' | 'hybrid' = 'hybrid',
-    flowTimeoutContext?: FlowTimeoutSendContext
+    flowTimeoutContext?: FlowTimeoutSendContext,
+    // Issue #30 [BE-049]: sin esto, ni la regla legacy HANDOFF ni la tool de IA
+    // handoff_to_advisor pueden derivar de verdad (necesitan saber de qué usuario son los
+    // asesores, y desde qué sesión de WhatsApp notificarlos) — undefined en llamadores que no lo
+    // tienen a mano (ej. POST /bot/reply de prueba) simplemente los deja sin esa capacidad.
+    userId?: number
   ): Promise<{
     replyText: string;
     messages: FlowOutboundMessage[];
-    source: 'KEYWORD_RULE' | 'AI_AGENT' | 'TACTICA_API' | 'FLOW_ENGINE';
+    source: 'KEYWORD_RULE' | 'AI_AGENT' | 'TACTICA_API' | 'FLOW_ENGINE' | 'HANDOFF';
     sourceKbIds: number[];
     handoff?: FlowHandoffRequest;
+    // Cuando el handoff se resolvió acá mismo (no en el editor de flujos) — ver
+    // AdvisorService.handoffConversation — whatsapp.service.ts usa esto para pausar el bot sin
+    // volver a elegir/notificar al asesor (ver HandoffContext.resolvedAdvisor).
+    resolvedAdvisor?: Advisor;
   } | null> {
     const textLower = incomingText.trim().toLowerCase();
 
@@ -65,7 +75,20 @@ export class BotEngineService {
             console.error('❌ [BOT ENGINE] No se pudo obtener el contexto de KB:', err);
           }
           const customPrompt = `${customInstructions}\nInstrucción de este bloque: ${rule.replyText}`;
-          const aiReply = await AIService.processMessage(incomingText, conversationHistory, tacticaCredentials, knowledgeContext, customPrompt, 'bot', aiProvider, aiModel);
+          const { text: aiReply, handoffAdvisor } = await AIService.processMessage(
+            incomingText, conversationHistory, tacticaCredentials, knowledgeContext, customPrompt, 'bot', aiProvider, aiModel,
+            userId, customerPhoneNumber, contactName
+          );
+          if (handoffAdvisor) {
+            return {
+              replyText: aiReply,
+              messages: [{ kind: 'text', text: aiReply }],
+              source: 'HANDOFF',
+              sourceKbIds,
+              handoff: { nodeId: 'ai_tool', advisorMode: 'auto', advisorId: null, pauseMinutes: null },
+              resolvedAdvisor: handoffAdvisor
+            };
+          }
           return {
             replyText: aiReply,
             messages: [{ kind: 'text', text: aiReply }],
@@ -74,17 +97,36 @@ export class BotEngineService {
           };
         }
 
-        // Nota: esta regla legacy por palabra clave es un camino distinto del bloque "Contactar
-        // Asesor" del editor visual de flujos — no elige/notifica un asesor real (ver
-        // FlowEngineService/HandoffService), solo manda un texto fijo. Se deja así a propósito:
-        // el handoff real es exclusivo del flujo visual.
+        // Regla legacy por palabra clave con derivación real (Issue #30 [BE-049]): elige asesor
+        // por round-robin, genera el resumen con IA y lo notifica por WhatsApp — ver
+        // AdvisorService.handoffConversation. Sin userId (llamador sin sesión real, ej. POST
+        // /bot/reply de prueba) o sin ningún asesor configurado, se cae al texto fijo de
+        // siempre (mismo criterio que pide el issue).
         if (rule.action === 'HANDOFF') {
-          const text = rule.replyText || 'Te estamos transfiriendo con un asesor de nuestro equipo. En instantes te responderán por este chat.';
+          let text = rule.replyText || 'Te estamos transfiriendo con un asesor de nuestro equipo. En instantes te responderán por este chat.';
+          let resolvedAdvisor: Advisor | undefined;
+
+          if (userId) {
+            try {
+              const fullHistory = [...conversationHistory, { role: 'user' as const, content: incomingText }];
+              const result = await AdvisorService.handoffConversation(userId, customerPhoneNumber, contactName, fullHistory);
+              if (result) {
+                resolvedAdvisor = result.advisor;
+                text = `Perfecto, te estoy comunicando con ${result.advisor.name}, nuestro asesor. En breve te va a escribir por este mismo chat o te va a contactar al ${result.advisor.phone}.`;
+              }
+            } catch (err) {
+              console.error('❌ [BOT ENGINE] Error derivando a un asesor (regla HANDOFF):', err);
+            }
+          }
+
           return {
             replyText: text,
             messages: [{ kind: 'text', text }],
-            source: 'KEYWORD_RULE',
-            sourceKbIds: []
+            source: resolvedAdvisor ? 'HANDOFF' : 'KEYWORD_RULE',
+            sourceKbIds: [],
+            ...(resolvedAdvisor
+              ? { handoff: { nodeId: 'keyword_rule', advisorMode: 'auto', advisorId: null, pauseMinutes: null }, resolvedAdvisor }
+              : {})
           };
         }
 
@@ -126,7 +168,21 @@ export class BotEngineService {
       console.error('❌ [BOT ENGINE] No se pudo obtener el contexto de la Base de Conocimiento:', err);
     }
 
-    const aiReply = await AIService.processMessage(incomingText, conversationHistory, tacticaCredentials, knowledgeContext, customInstructions, 'bot', aiProvider, aiModel);
+    const { text: aiReply, handoffAdvisor } = await AIService.processMessage(
+      incomingText, conversationHistory, tacticaCredentials, knowledgeContext, customInstructions, 'bot', aiProvider, aiModel,
+      userId, customerPhoneNumber, contactName
+    );
+
+    if (handoffAdvisor) {
+      return {
+        replyText: aiReply,
+        messages: [{ kind: 'text', text: aiReply }],
+        source: 'HANDOFF',
+        sourceKbIds,
+        handoff: { nodeId: 'ai_tool', advisorMode: 'auto', advisorId: null, pauseMinutes: null },
+        resolvedAdvisor: handoffAdvisor
+      };
+    }
 
     return {
       replyText: aiReply,

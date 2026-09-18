@@ -5,6 +5,7 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import { z } from 'zod';
 import dotenv from 'dotenv';
 import { TacticaApiService, TacticaCredentials } from './tacticaApi.service.js';
+import { AdvisorService, Advisor } from './advisor.service.js';
 
 dotenv.config();
 
@@ -298,6 +299,45 @@ function buildTacticaTools(tacticaCredentials: TacticaCredentials) {
   };
 }
 
+// Derivación a un asesor humano por decisión de la propia IA (Issue #30 [BE-049], punto 4) —
+// distinta del bloque "Contactar Asesor" del editor de flujos (ese es una decisión del usuario al
+// diagramar, no del modelo). Solo se ofrece cuando processMessage recibió userId+customerPhone
+// (ver canHandoff más abajo); su ejecución real vive en AdvisorService.handoffConversation
+// (elige asesor por round-robin, resume la charla con IA, notifica por WhatsApp) — acá solo se
+// arma el resultado para que el modelo redacte una respuesta acorde, y se deja la referencia al
+// asesor en `outcome` para que processMessage se la devuelva a quien lo llamó (botEngine.service.ts
+// necesita saber que hubo un handoff para pausar el bot en esta conversación).
+function buildHandoffTool(
+  userId: number,
+  customerPhone: string,
+  customerName: string,
+  conversationHistory: SimpleMessage[],
+  userMessage: string,
+  outcome: { advisor?: Advisor }
+) {
+  return {
+    handoff_to_advisor: tool({
+      description: 'Derivar esta conversación a un asesor humano cuando el cliente lo pida explícitamente o la consulta claramente requiera intervención de una persona (reclamo grave, negociación, algo que la Base de Conocimiento no resuelve).',
+      parameters: z.object({
+        reason: z.string().describe('Motivo breve de la derivación')
+      }),
+      execute: async () => {
+        const result = await AdvisorService.handoffConversation(
+          userId,
+          customerPhone,
+          customerName,
+          [...conversationHistory, { role: 'user' as const, content: userMessage }]
+        );
+        if (!result) {
+          return 'No hay asesores humanos configurados todavía — informale al cliente que en breve alguien del equipo se va a comunicar, sin inventar un nombre ni un tiempo exacto.';
+        }
+        outcome.advisor = result.advisor;
+        return `Se derivó correctamente a ${result.advisor.name}. Confirmale al cliente, en una frase breve y cordial, que ${result.advisor.name} (un asesor humano) se va a poner en contacto en breve — no agregues más información técnica sobre la derivación.`;
+      }
+    })
+  };
+}
+
 export class AIService {
   static async processMessage(
     userMessage: string,
@@ -307,13 +347,16 @@ export class AIService {
     customInstructions: string = '',
     mode: 'bot' | 'utility' = 'bot',
     aiProvider: string = 'google',
-    aiModel: string = ''
-  ): Promise<string> {
+    aiModel: string = '',
+    userId?: number,
+    customerPhone?: string,
+    customerName?: string
+  ): Promise<{ text: string; handoffAdvisor?: Advisor }> {
     const { model, providerLabel, hasApiKey } = resolveModel(aiProvider, aiModel);
 
     if (!hasApiKey) {
       console.error(`❌ [AIService] Falta la API key de ${providerLabel} en el servidor.`);
-      return 'Lo siento, ocurrió un error al procesar tu mensaje. Un asesor te atenderá pronto.';
+      return { text: 'Lo siento, ocurrió un error al procesar tu mensaje. Un asesor te atenderá pronto.' };
     }
 
     try {
@@ -335,26 +378,38 @@ export class AIService {
 
       // Las tools de Táctica ERP (function calling multi-paso, ver Issue #8) solo se habilitan
       // cuando quien llama efectivamente tiene credenciales de Táctica — así un chat sin ERP
-      // conectado no cambia de comportamiento respecto a antes.
+      // conectado no cambia de comportamiento respecto a antes. Mismo criterio para la
+      // derivación a asesor (Issue #30): sin userId+customerPhone no hay a quién derivar ni
+      // desde qué sesión de WhatsApp, así que la tool ni se ofrece.
       const hasTacticaCreds = !!(tacticaCredentials.usuario && tacticaCredentials.contrasena);
+      const canHandoff = mode === 'bot' && !!userId && !!customerPhone;
+      const handoffOutcome: { advisor?: Advisor } = {};
 
       const result = await generateTextWithRetry({
         model,
         temperature: 0,
         system,
         messages: [...recentHistory, { role: 'user', content: userMessage }],
-        ...(mode === 'bot' && hasTacticaCreds
-          ? { tools: buildTacticaTools(tacticaCredentials), maxSteps: 3 }
+        ...(mode === 'bot' && (hasTacticaCreds || canHandoff)
+          ? {
+              tools: {
+                ...(hasTacticaCreds ? buildTacticaTools(tacticaCredentials) : {}),
+                ...(canHandoff
+                  ? buildHandoffTool(userId!, customerPhone!, customerName || 'Cliente', recentHistory, userMessage, handoffOutcome)
+                  : {})
+              },
+              maxSteps: 3
+            }
           : {})
       });
 
-      return result.text || 'Sin respuesta';
+      return { text: result.text || 'Sin respuesta', handoffAdvisor: handoffOutcome.advisor };
     } catch (error: any) {
       console.error('❌ Error en AIService.processMessage:', error?.message || error);
       if (!hasApiKey) {
-        return `Disculpas, la clave de IA de ${providerLabel} no está configurada en el servidor.`;
+        return { text: `Disculpas, la clave de IA de ${providerLabel} no está configurada en el servidor.` };
       }
-      return 'Disculpas, ocurrió un problema temporal con el servicio de inteligencia artificial. En instantes te responderá un asesor.';
+      return { text: 'Disculpas, ocurrió un problema temporal con el servicio de inteligencia artificial. En instantes te responderá un asesor.' };
     }
   }
 
