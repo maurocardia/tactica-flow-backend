@@ -2,7 +2,8 @@ import { AIService } from './ai.service.js';
 import { TacticaCredentials } from './tacticaApi.service.js';
 import { KeywordRuleService } from './keywordRule.service.js';
 import { KnowledgeBaseService } from './knowledgeBase.service.js';
-import { FlowEngineService } from './flowEngine.service.js';
+import { FlowEngineService, FlowTimeoutSendContext } from './flowEngine.service.js';
+import { FlowOutboundMessage, FlowHandoffRequest } from '../types/flow.js';
 
 export type { KeywordRule } from './keywordRule.service.js';
 
@@ -20,8 +21,15 @@ export class BotEngineService {
     aiProvider: string = 'google',
     aiModel: string = '',
     contactName: string = 'Cliente',
-    botMode: 'flow_only' | 'ai_only' | 'hybrid' = 'hybrid'
-  ): Promise<{ replyText: string; source: 'KEYWORD_RULE' | 'AI_AGENT' | 'TACTICA_API' | 'FLOW_ENGINE'; sourceKbIds: number[] } | null> {
+    botMode: 'flow_only' | 'ai_only' | 'hybrid' = 'hybrid',
+    flowTimeoutContext?: FlowTimeoutSendContext
+  ): Promise<{
+    replyText: string;
+    messages: FlowOutboundMessage[];
+    source: 'KEYWORD_RULE' | 'AI_AGENT' | 'TACTICA_API' | 'FLOW_ENGINE';
+    sourceKbIds: number[];
+    handoff?: FlowHandoffRequest;
+  } | null> {
     const textLower = incomingText.trim().toLowerCase();
 
     // 0. Historial reciente
@@ -33,7 +41,7 @@ export class BotEngineService {
     // 1. Evaluar Flujo Visual (Con Estado) — se salta por completo en modo "Solo IA" (ver
     // ChatbotModule.tsx, selector de modo de respuesta).
     if (botMode !== 'ai_only') {
-      const flowResult = await FlowEngineService.processMessage(incomingText, customerPhoneNumber, contactName);
+      const flowResult = await FlowEngineService.processMessage(incomingText, customerPhoneNumber, contactName, flowTimeoutContext);
       if (flowResult) {
         console.log(`🤖 [BOT ENGINE] Mensaje procesado por FlowEngine (estado guardado).`);
         return flowResult;
@@ -60,14 +68,21 @@ export class BotEngineService {
           const aiReply = await AIService.processMessage(incomingText, conversationHistory, tacticaCredentials, knowledgeContext, customPrompt, 'bot', aiProvider, aiModel);
           return {
             replyText: aiReply,
+            messages: [{ kind: 'text', text: aiReply }],
             source: 'AI_AGENT',
             sourceKbIds
           };
         }
 
+        // Nota: esta regla legacy por palabra clave es un camino distinto del bloque "Contactar
+        // Asesor" del editor visual de flujos — no elige/notifica un asesor real (ver
+        // FlowEngineService/HandoffService), solo manda un texto fijo. Se deja así a propósito:
+        // el handoff real es exclusivo del flujo visual.
         if (rule.action === 'HANDOFF') {
+          const text = rule.replyText || 'Te estamos transfiriendo con un asesor de nuestro equipo. En instantes te responderán por este chat.';
           return {
-            replyText: rule.replyText || 'Te estamos transfiriendo con un asesor de nuestro equipo. En instantes te responderán por este chat.',
+            replyText: text,
+            messages: [{ kind: 'text', text }],
             source: 'KEYWORD_RULE',
             sourceKbIds: []
           };
@@ -76,6 +91,7 @@ export class BotEngineService {
         if (rule.replyText) {
           return {
             replyText: rule.replyText,
+            messages: [{ kind: 'text', text: rule.replyText }],
             source: 'KEYWORD_RULE',
             sourceKbIds: []
           };
@@ -114,6 +130,7 @@ export class BotEngineService {
 
     return {
       replyText: aiReply,
+      messages: [{ kind: 'text', text: aiReply }],
       source: 'AI_AGENT',
       sourceKbIds
     };

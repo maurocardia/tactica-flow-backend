@@ -311,6 +311,34 @@ const SCHEMA_SQL = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_advisors_user_id ON advisors(user_id);
+
+  -- Pausa del bot por derivación a asesor (bloque "Contactar Asesor" del diagramador de flujos).
+  -- Separado a propósito de bot_enabled (switch manual del panel) y de is_blacklisted (bloqueo
+  -- permanente): esto es una pausa TEMPORAL y automática mientras un asesor humano atiende la
+  -- conversación — ver HandoffService y el chequeo en WhatsappService.handleIncomingMessage.
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS handoff_advisor_id INT REFERENCES advisors(id) ON DELETE SET NULL;
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS handoff_started_at TIMESTAMPTZ;
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS handoff_paused_until TIMESTAMPTZ;
+  CREATE INDEX IF NOT EXISTS idx_bot_contacts_handoff ON bot_contacts(user_id, owner_jid, jid, handoff_paused_until);
+
+  -- Duración por defecto de la pausa tras un handoff (minutos). 0 = hasta reactivación manual
+  -- desde el panel (botón "Reactivar bot" en ContactBotSwitchesModal).
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS handoff_pause_minutes INT NOT NULL DEFAULT 120;
+
+  -- Adjuntos multimedia de los bloques de flujo (Enviar Imagen/Video/Audio/Documento). Los bytes
+  -- se guardan acá y se cargan en proceso para pasárselos a Baileys como Buffer — así no hace
+  -- falta exponer una URL pública ni que el backend sea alcanzable desde internet.
+  CREATE TABLE IF NOT EXISTS flow_media_assets (
+    id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('image','video','audio','document')),
+    file_name TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size_bytes INT NOT NULL DEFAULT 0,
+    data BYTEA NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS idx_flow_media_assets_user_id ON flow_media_assets(user_id, created_at DESC);
 `;
 
 /**

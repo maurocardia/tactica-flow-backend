@@ -1,11 +1,31 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
+import multer from 'multer';
 import { WhatsappService } from '../services/whatsapp.service.js';
 import { AuthService, AiPromptSections, AiGeneralRules, BotMode } from '../services/auth.service.js';
 import { BotContactService } from '../services/botContact.service.js';
 import { AdvisorService } from '../services/advisor.service.js';
+import { FlowMediaService } from '../services/flowMedia.service.js';
 import { authMiddleware } from '../middleware/auth.middleware.js';
 
 const router = Router();
+
+// Adjuntos multimedia de nodos de flujo (Enviar Imagen/Video/Audio/Documento): a diferencia del
+// uploader de la Base de Conocimiento (sin límite, uso interno del equipo), acá sí se pone un
+// techo — 16 MB es el límite práctico de WhatsApp para adjuntos inline, y evita inflar Postgres
+// (los bytes se guardan en flow_media_assets.data, ver FlowMediaService) con archivos que de todas
+// formas WhatsApp va a rechazar.
+const flowMediaUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 16 * 1024 * 1024 } });
+
+/** Mismo wrapper que knowledgeBase.routes.ts: multer reporta errores vía next(err), no con throw. */
+function handleFlowMediaUpload(req: Request, res: Response, next: NextFunction) {
+  flowMediaUpload.single('file')(req, res, (err: unknown) => {
+    if (err) {
+      const message = err instanceof Error ? err.message : 'Error al procesar el archivo subido';
+      return res.status(400).json({ error: message });
+    }
+    next();
+  });
+}
 
 // Todas estas rutas son "del usuario autenticado": cada usuario conecta y controla únicamente
 // su propia sesión de WhatsApp.
@@ -346,6 +366,18 @@ router.put('/bot-contacts/:id/enabled', async (req: Request, res: Response) => {
   }
 });
 
+// Reactiva el bot para un contacto pausado por una derivación a asesor (bloque "Contactar
+// Asesor" del flujo) — botón "Reactivar bot" del panel, ver HandoffService/getGatingFlags.
+router.put('/bot-contacts/:id/resume-bot', async (req: Request, res: Response) => {
+  try {
+    const contact = await BotContactService.clearHandoffPause(Number(req.params.id));
+    if (!contact) return res.status(404).json({ error: 'Contacto no encontrado' });
+    res.json(contact);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al reactivar el bot para este contacto' });
+  }
+});
+
 // Blacklist (pestaña junto a Contactos/Grupos en el panel): bloquea/desbloquea un contacto ya
 // existente en bot_contacts — bloquearlo apaga bot_enabled automáticamente (ver
 // BotContactService.setBlacklisted).
@@ -535,6 +567,64 @@ router.post('/advisors/reset-counts', async (req: Request, res: Response) => {
     res.json({ status: 'ok' });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al resetear los contadores' });
+  }
+});
+
+// --- Adjuntos multimedia de nodos de flujo (Enviar Imagen/Video/Audio/Documento) --------------
+
+const FLOW_MEDIA_KINDS = ['image', 'video', 'audio', 'document'];
+
+router.get('/flow-media', async (req: Request, res: Response) => {
+  try {
+    res.json(await FlowMediaService.list(req.user!.id));
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al listar los adjuntos' });
+  }
+});
+
+router.post('/flow-media', handleFlowMediaUpload, async (req: Request, res: Response) => {
+  const kind = req.body?.kind;
+  if (!FLOW_MEDIA_KINDS.includes(kind)) {
+    return res.status(400).json({ error: `El campo "kind" debe ser uno de: ${FLOW_MEDIA_KINDS.join(', ')}` });
+  }
+  const file = (req as Request & { file?: Express.Multer.File }).file;
+  if (!file) {
+    return res.status(400).json({ error: 'Falta el archivo ("file")' });
+  }
+  if (!FlowMediaService.isMimeAllowed(kind, file.mimetype)) {
+    return res.status(400).json({ error: `Tipo de archivo no permitido para "${kind}": ${file.mimetype}` });
+  }
+
+  try {
+    const asset = await FlowMediaService.create(req.user!.id, kind, file.originalname, file.mimetype, file.buffer);
+    res.json(asset);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al subir el adjunto' });
+  }
+});
+
+// Bytes crudos para el preview en el editor de flujos (<img src>, <video>, etc. no pueden llevar
+// el header Authorization — por eso esta ruta va detrás de authMiddleware igual que el resto,
+// pero el frontend la consume con un fetch autenticado que arma un blob: URL, no un <img src>
+// directo — ver ApiService.fetchFlowMediaBlob).
+router.get('/flow-media/:id/raw', async (req: Request, res: Response) => {
+  try {
+    const asset = await FlowMediaService.getByIdWithData(req.user!.id, Number(req.params.id));
+    if (!asset) return res.status(404).json({ error: 'Adjunto no encontrado' });
+    res.setHeader('Content-Type', asset.mimeType);
+    res.send(asset.data);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al obtener el adjunto' });
+  }
+});
+
+router.delete('/flow-media/:id', async (req: Request, res: Response) => {
+  try {
+    const deleted = await FlowMediaService.delete(req.user!.id, Number(req.params.id));
+    if (!deleted) return res.status(404).json({ error: 'Adjunto no encontrado' });
+    res.json({ status: 'deleted' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al borrar el adjunto' });
   }
 });
 

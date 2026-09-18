@@ -11,6 +11,15 @@ export interface BotContact {
   botEnabled: boolean;
   isBlacklisted: boolean;
   lastActivity: string;
+  handoffAdvisorId: number | null;
+  handoffPausedUntil: string | null;
+}
+
+export interface GatingFlags {
+  isBlacklisted: boolean;
+  botEnabled: boolean;
+  handoffPausedUntil: Date | null;
+  handoffAdvisorId: number | null;
 }
 
 function mapRow(row: any): BotContact {
@@ -24,6 +33,8 @@ function mapRow(row: any): BotContact {
     botEnabled: row.bot_enabled,
     isBlacklisted: row.is_blacklisted,
     lastActivity: new Date(row.last_activity).toISOString(),
+    handoffAdvisorId: row.handoff_advisor_id ?? null,
+    handoffPausedUntil: row.handoff_paused_until ? new Date(row.handoff_paused_until).toISOString() : null,
   };
 }
 
@@ -162,6 +173,57 @@ export class BotContactService {
       [userId, ownerJid, jid, name]
     );
     return mapRow(rows[0]);
+  }
+
+  /**
+   * Una sola consulta con TODO lo que el camino caliente de un mensaje entrante necesita chequear
+   * antes de dejar responder al bot (blacklist, switch por contacto, pausa por handoff) — antes
+   * eran dos round-trips separados (isBlacklisted + isEnabled); agregar la pausa como una tercera
+   * consulta habría sumado latencia a CADA mensaje. Si la fila todavía no existe (contacto nuevo,
+   * el upsert de handleIncomingMessage es fire-and-forget y puede no haber terminado todavía),
+   * devuelve defaults seguros: no bloqueado, no habilitado, sin pausa.
+   */
+  static async getGatingFlags(userId: number, jid: string): Promise<GatingFlags> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query(
+      `SELECT is_blacklisted, bot_enabled, handoff_paused_until, handoff_advisor_id
+       FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
+      [userId, ownerJid, jid]
+    );
+    if (rows.length === 0) {
+      return { isBlacklisted: false, botEnabled: false, handoffPausedUntil: null, handoffAdvisorId: null };
+    }
+    const row = rows[0];
+    return {
+      isBlacklisted: row.is_blacklisted,
+      botEnabled: row.bot_enabled,
+      handoffPausedUntil: row.handoff_paused_until ? new Date(row.handoff_paused_until) : null,
+      handoffAdvisorId: row.handoff_advisor_id ?? null,
+    };
+  }
+
+  /** Pausa el bot para esta conversación puntual tras derivarla a un asesor (bloque "Contactar
+   * Asesor" del flujo) — ver HandoffService. `minutes` 0/null pausa hasta reactivación manual
+   * (handoff_paused_until queda en una fecha muy lejana en vez de NULL, para no confundirla con
+   * "nunca hubo un handoff"). */
+  static async setHandoffPause(userId: number, jid: string, advisorId: number | null, minutes: number | null): Promise<void> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const pausedUntil = minutes && minutes > 0 ? new Date(Date.now() + minutes * 60 * 1000) : new Date('9999-01-01T00:00:00Z');
+    await db.query(
+      `UPDATE bot_contacts
+       SET handoff_advisor_id = $1, handoff_started_at = now(), handoff_paused_until = $2
+       WHERE user_id = $3 AND owner_jid = $4 AND jid = $5`,
+      [advisorId, pausedUntil, userId, ownerJid, jid]
+    );
+  }
+
+  /** Botón "Reactivar bot" del panel — vuelve a dejar que el bot le responda a este contacto. */
+  static async clearHandoffPause(id: number): Promise<BotContact | null> {
+    const { rows } = await db.query(
+      `UPDATE bot_contacts SET handoff_paused_until = NULL WHERE id = $1 RETURNING *`,
+      [id]
+    );
+    return rows.length > 0 ? mapRow(rows[0]) : null;
   }
 
   /** Borra un contacto/grupo puntual de la lista — botón "X" del panel. Solo afecta bot_contacts. */

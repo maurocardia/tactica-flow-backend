@@ -34,6 +34,11 @@ export class AdvisorService {
     return rows.map(mapRow);
   }
 
+  static async getById(userId: number, id: number): Promise<Advisor | null> {
+    const { rows } = await db.query('SELECT * FROM advisors WHERE id = $1 AND user_id = $2', [id, userId]);
+    return rows.length > 0 ? mapRow(rows[0]) : null;
+  }
+
   static async create(userId: number, name: string, phone: string): Promise<Advisor> {
     const { rows } = await db.query(
       `INSERT INTO advisors (user_id, name, phone) VALUES ($1, $2, $3) RETURNING *`,
