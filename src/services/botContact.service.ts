@@ -290,11 +290,12 @@ export class BotContactService {
    */
   static async bulkImport(
     userId: number,
-    contacts: { phone: string; name?: string; enabled: boolean }[]
-  ): Promise<{ created: number; updated: number; errors: number; errorDetails: string[] }> {
+    contacts: { phone: string; name?: string; enabled: boolean; blacklisted?: boolean }[]
+  ): Promise<{ created: number; updated: number; blacklisted: number; errors: number; errorDetails: string[] }> {
     const existingJids = new Set((await this.list(userId)).map((c) => c.jid));
     let created = 0;
     let updated = 0;
+    let blacklisted = 0;
     let errors = 0;
     const errorDetails: string[] = [];
 
@@ -313,7 +314,16 @@ export class BotContactService {
         }
         const jid = `${cleanPhone}@s.whatsapp.net`;
         const wasExisting = existingJids.has(jid);
-        await this.addManual(userId, jid, row.name?.trim() || cleanPhone, row.enabled);
+        const name = row.name?.trim() || cleanPhone;
+        // "Bloquear" (Blacklist): a diferencia de enabled=false (solo apaga el switch del bot),
+        // marca is_blacklisted=true para que el contacto aparezca en la pestaña Blacklist del
+        // panel y nunca reciba respuesta — ver addToBlacklist.
+        if (row.blacklisted === true) {
+          await this.addToBlacklist(userId, jid, name);
+          blacklisted++;
+        } else {
+          await this.addManual(userId, jid, name, row.enabled);
+        }
         if (wasExisting) {
           updated++;
         } else {
@@ -326,6 +336,6 @@ export class BotContactService {
       }
     }
 
-    return { created, updated, errors, errorDetails };
+    return { created, updated, blacklisted, errors, errorDetails };
   }
 }
