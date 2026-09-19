@@ -29,6 +29,7 @@
     "qrcode": "^1.5.4",
     "socket.io": "^4.8.1",
     "tactica-flow-backend": "file:",
+    "xlsx": "^0.18.5",
     "zod": "^3.25.76"
   },
   "devDependencies": {

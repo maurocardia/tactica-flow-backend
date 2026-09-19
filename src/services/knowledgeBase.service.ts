@@ -1,6 +1,7 @@
 import { db } from '../config/db.js';
 import { PDFParse } from 'pdf-parse';
 import mammoth from 'mammoth';
+import * as XLSX from 'xlsx';
 
 export interface KnowledgeBase {
   id: number;
@@ -22,7 +23,7 @@ export interface KnowledgeDocument {
 
 
 
-const ALLOWED_EXTENSIONS = ['pdf', 'docx', 'txt', 'md'];
+const ALLOWED_EXTENSIONS = ['pdf', 'docx', 'txt', 'md', 'csv', 'xlsx'];
 
 // --- Seguridad: detección de intentos de "prompt injection" en documentos subidos -----------
 // Defensa best-effort (heurística por patrones, no infalible) contra archivos que intenten
@@ -165,7 +166,7 @@ export class KnowledgeBaseService {
     const ext = (filename.toLowerCase().split('.').pop() || '').trim();
 
     if (!ALLOWED_EXTENSIONS.includes(ext)) {
-      throw new Error(`Tipo de archivo no soportado: .${ext || '?'}. Usá PDF, Word (.docx), .txt o .md.`);
+      throw new Error(`Tipo de archivo no soportado: .${ext || '?'}. Usá PDF, Word (.docx), Excel (.xlsx), CSV (.csv), .txt o .md.`);
     }
 
     if (ext === 'pdf') {
@@ -182,6 +183,29 @@ export class KnowledgeBaseService {
     if (ext === 'docx') {
       const result = await mammoth.extractRawText({ buffer });
       return result.value.trim();
+    }
+
+    // CSV: se parsea con xlsx (no basta con buffer.toString, ver .xlsx abajo) para normalizar
+    // el separador real del archivo (coma, punto y coma, tab) a un formato tabular uniforme y
+    // legible — mismo criterio "columna1 | columna2" que .xlsx, así la IA no tiene que aprender
+    // dos formatos distintos de tabla.
+    if (ext === 'csv') {
+      const wb = XLSX.read(buffer.toString('utf-8'), { type: 'string' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      return XLSX.utils.sheet_to_csv(sheet, { FS: ' | ', RS: '\n' }).trim();
+    }
+
+    // Excel: procesa TODAS las hojas del libro (no solo la primera), cada una con su propio
+    // encabezado "--- Hoja: nombre ---" para que la IA sepa de qué hoja viene cada dato.
+    if (ext === 'xlsx') {
+      const wb = XLSX.read(buffer, { type: 'buffer' });
+      const allSheets: string[] = [];
+      for (const sheetName of wb.SheetNames) {
+        const sheet = wb.Sheets[sheetName];
+        const rows = XLSX.utils.sheet_to_csv(sheet, { FS: ' | ', RS: '\n' });
+        if (rows.trim()) allSheets.push(`--- Hoja: ${sheetName} ---\n${rows.trim()}`);
+      }
+      return allSheets.join('\n\n').trim();
     }
 
     // txt / md

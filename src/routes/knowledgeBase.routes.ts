@@ -93,7 +93,8 @@ router.delete('/:id', async (req: Request, res: Response) => {
   }
 });
 
-// --- Documentos (PDF / Word / Markdown / texto) -------------------------------------------
+// --- Documentos (PDF / Word / Excel / CSV / Markdown / texto) — validación por extensión del
+// nombre de archivo, ver ALLOWED_EXTENSIONS en KnowledgeBaseService.extractText ------------
 
 router.get('/:id/documents', async (req: Request, res: Response) => {
   try {
