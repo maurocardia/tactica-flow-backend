@@ -362,6 +362,15 @@ export class AIService {
       return { text: 'Lo siento, ocurrió un error al procesar tu mensaje. Un asesor te atenderá pronto.' };
     }
 
+    // Declarado ANTES del try (no adentro) a propósito: la tool handoff_to_advisor puede elegir y
+    // notificar al asesor con éxito y AÚN ASÍ terminar en el catch de abajo, si el paso siguiente
+    // del modelo (redactar la respuesta final incorporando el resultado de la tool) falla por su
+    // cuenta — un `const` declarado dentro del try no es visible en el catch, así que antes esa
+    // derivación exitosa se perdía del todo: se le mandaba al cliente el mensaje genérico de error
+    // y nunca se guardaba la reserva del asesor (bot_contacts.handoff_advisor_id/handoff_expires_at
+    // quedaban en null pese a que advisors.handoff_count ya se había incrementado).
+    const handoffOutcome: { advisor?: Advisor } = {};
+
     try {
       let system: string;
 
@@ -386,7 +395,6 @@ export class AIService {
       // desde qué sesión de WhatsApp, así que la tool ni se ofrece.
       const hasTacticaCreds = !!(tacticaCredentials.usuario && tacticaCredentials.contrasena);
       const canHandoff = mode === 'bot' && !!userId && !!customerPhone;
-      const handoffOutcome: { advisor?: Advisor } = {};
 
       const result = await generateTextWithRetry({
         model,
@@ -409,6 +417,18 @@ export class AIService {
       return { text: result.text || 'Sin respuesta', handoffAdvisor: handoffOutcome.advisor };
     } catch (error: any) {
       console.error('❌ Error en AIService.processMessage:', error?.message || error);
+
+      // La tool handoff_to_advisor ya eligió/notificó a un asesor real (con éxito) ANTES de que
+      // este error pasara — ver el comentario de handoffOutcome más arriba. No hay que perder eso:
+      // se le confirma al cliente que igual quedó derivado, en vez del mensaje genérico de error
+      // que sonaría a que no pasó nada (y sin esto tampoco se guardaba la reserva del asesor).
+      if (handoffOutcome.advisor) {
+        return {
+          text: `Perfecto, te estoy comunicando con ${handoffOutcome.advisor.name}, nuestro asesor. En breve te va a escribir por este mismo chat o te va a contactar al ${handoffOutcome.advisor.phone}.`,
+          handoffAdvisor: handoffOutcome.advisor
+        };
+      }
+
       if (!hasApiKey) {
         return { text: `Disculpas, la clave de IA de ${providerLabel} no está configurada en el servidor.` };
       }

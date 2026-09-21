@@ -312,18 +312,34 @@ const SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS idx_advisors_user_id ON advisors(user_id);
 
-  -- Pausa del bot por derivación a asesor (bloque "Contactar Asesor" del diagramador de flujos).
-  -- Separado a propósito de bot_enabled (switch manual del panel) y de is_blacklisted (bloqueo
-  -- permanente): esto es una pausa TEMPORAL y automática mientras un asesor humano atiende la
-  -- conversación — ver HandoffService y el chequeo en WhatsappService.handleIncomingMessage.
+  -- Reserva de asesor por derivación (bloque "Contactar Asesor" del diagramador de flujos, regla
+  -- legacy de palabra clave, tool de IA handoff_to_advisor). A propósito NO bloquea al bot — el
+  -- bot sigue respondiendo con normalidad — esto solo evita derivar al mismo cliente a un SEGUNDO
+  -- asesor mientras el primero todavía tiene tiempo de contactarlo: si el cliente vuelve a pedir
+  -- un asesor dentro de la ventana, se le avisa que ya tiene uno asignado (ver
+  -- AdvisorService.getActiveHandoffAdvisor); pasados 30 minutos sin que se libere a mano, la
+  -- reserva vence sola y un nuevo pedido puede asignar a cualquiera (el mismo u otro).
   ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS handoff_advisor_id INT REFERENCES advisors(id) ON DELETE SET NULL;
   ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS handoff_started_at TIMESTAMPTZ;
-  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS handoff_paused_until TIMESTAMPTZ;
-  CREATE INDEX IF NOT EXISTS idx_bot_contacts_handoff ON bot_contacts(user_id, owner_jid, jid, handoff_paused_until);
+  -- Nombre nuevo (una base fresca lo crea directo acá, ver comentario de arriba). Bases con el
+  -- nombre viejo "handoff_paused_until" se migran con el bloque de abajo — NO usar "ADD COLUMN IF
+  -- NOT EXISTS handoff_paused_until" acá: una vez migrada la columna vieja, esa línea la volvería
+  -- a crear vacía en cada arranque (el "IF NOT EXISTS" ya no la encuentra porque se renombró).
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS handoff_expires_at TIMESTAMPTZ;
+  DO $$
+  BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'bot_contacts' AND column_name = 'handoff_paused_until') THEN
+      UPDATE bot_contacts SET handoff_expires_at = handoff_paused_until
+        WHERE handoff_expires_at IS NULL AND handoff_paused_until IS NOT NULL;
+      ALTER TABLE bot_contacts DROP COLUMN handoff_paused_until;
+    END IF;
+  END $$;
+  CREATE INDEX IF NOT EXISTS idx_bot_contacts_handoff ON bot_contacts(user_id, owner_jid, jid, handoff_expires_at);
 
-  -- Duración por defecto de la pausa tras un handoff (minutos). 0 = hasta reactivación manual
-  -- desde el panel (botón "Reactivar bot" en ContactBotSwitchesModal).
-  ALTER TABLE users ADD COLUMN IF NOT EXISTS handoff_pause_minutes INT NOT NULL DEFAULT 120;
+  -- users.handoff_pause_minutes (int, default 120) quedó sin uso — la duración de la reserva de
+  -- asesor ahora es un valor fijo de 30 minutos (ver AdvisorService), no configurable por cuenta.
+  -- Se deja la columna en la base (no vale la pena una migración de DROP por esto) pero ya no se
+  -- lee desde ningún lado.
 
   -- Adjuntos multimedia de los bloques de flujo (Enviar Imagen/Video/Audio/Documento). Los bytes
   -- se guardan acá y se cargan en proceso para pasárselos a Baileys como Buffer — así no hace

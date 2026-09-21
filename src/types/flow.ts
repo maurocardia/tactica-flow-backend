@@ -26,5 +26,4 @@ export interface FlowHandoffRequest {
   advisorMode: 'auto' | 'fixed';
   advisorId: number | null;
   notifyTemplate?: string;
-  pauseMinutes: number | null; // null/0 = pausa hasta reactivación manual
 }
