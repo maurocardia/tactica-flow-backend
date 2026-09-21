@@ -76,12 +76,32 @@ function rememberLidMapping(userId: number, lidJid: string | undefined, phoneJid
   const map = lidToPhoneJid.get(userId) || new Map<string, string>();
   map.set(lidJid.split('@')[0], phoneJid);
   lidToPhoneJid.set(userId, map);
+  // También se guarda en bot_contacts.lid (si esa fila existe) para que sobreviva a reinicios.
+  BotContactService.setLid(userId, phoneJid, lidJid).catch(() => {});
 }
 
-/** Devuelve el JID de teléfono equivalente si `jid` es un @lid conocido; si no, `jid` tal cual. */
-function toCanonicalJid(userId: number, jid: string): string {
+/**
+ * Devuelve el JID de teléfono equivalente si `jid` es un @lid conocido (primero en memoria y, si no,
+ * en bot_contacts.lid — que se llena al importar/dar de alta por teléfono, ver resolveLids); si no
+ * se conoce, `jid` tal cual.
+ */
+async function toCanonicalJid(userId: number, jid: string): Promise<string> {
   if (!jid.endsWith('@lid')) return jid;
-  return lidToPhoneJid.get(userId)?.get(jid.split('@')[0]) ?? jid;
+  const local = jid.split('@')[0];
+  const cached = lidToPhoneJid.get(userId)?.get(local);
+  if (cached) return cached;
+  try {
+    const phoneJid = await BotContactService.findPhoneJidByLid(userId, jid);
+    if (phoneJid) {
+      const map = lidToPhoneJid.get(userId) || new Map<string, string>();
+      map.set(local, phoneJid);
+      lidToPhoneJid.set(userId, map);
+      return phoneJid;
+    }
+  } catch (err) {
+    console.error('⚠️ [WhatsApp] No se pudo resolver el @lid contra bot_contacts:', err);
+  }
+  return jid;
 }
 
 function getSavedContactName(userId: number, jid: string | undefined): string | undefined {
@@ -320,6 +340,31 @@ export class WhatsappService {
     return 'disconnected';
   }
 
+  /**
+   * Consulta a WhatsApp (onWhatsApp) el @lid de cada teléfono — así un contacto importado por número
+   * se puede reconocer cuando WhatsApp lo identifica solo por su @lid. Devuelve un mapa
+   * teléfono(dígitos) -> @lid; vacío si no hay sesión conectada o la consulta falla (best-effort).
+   */
+  static async resolveLids(userId: number, phones: string[]): Promise<Map<string, string>> {
+    const result = new Map<string, string>();
+    const session = sessions.get(userId);
+    if (!session || session.status !== 'connected' || phones.length === 0) return result;
+    const CHUNK = 50;
+    for (let i = 0; i < phones.length; i += CHUNK) {
+      const chunk = phones.slice(i, i + CHUNK);
+      try {
+        const found = await session.socket.onWhatsApp(...chunk.map((p) => `${p}@s.whatsapp.net`));
+        for (const r of found ?? []) {
+          const lid = (r as { lid?: string }).lid;
+          if (r.exists && lid) result.set(r.jid.split('@')[0], lid.endsWith('@lid') ? lid : `${lid}@lid`);
+        }
+      } catch (err) {
+        console.error('⚠️ [WhatsApp] No se pudieron resolver los @lid (onWhatsApp):', err);
+      }
+    }
+    return result;
+  }
+
   static getOwnerJid(userId: number): string | null {
     const session = sessions.get(userId);
     if (session?.socket?.user?.id) {
@@ -518,7 +563,7 @@ export class WhatsappService {
     // con lo que WhatsApp le vaya mandando de la agenda, aunque el history sync completo esté
     // apagado; puede tardar en poblarse o, para algunos contactos, no llegar nunca (WhatsApp no
     // siempre comparte el nombre guardado del otro lado).
-    const onContactNames = (contacts: { id: string; lid?: string; jid?: string; name?: string }[]) => {
+    const onContactNames = async (contacts: { id: string; lid?: string; jid?: string; name?: string }[]) => {
       for (const c of contacts) {
         // Aprende la equivalencia @lid <-> teléfono aunque el contacto no traiga nombre.
         const phoneJid = c.id.endsWith('@s.whatsapp.net') ? c.id : c.jid;
@@ -529,7 +574,7 @@ export class WhatsappService {
         if (c.name && !c.id.endsWith('@g.us')) {
           // Si el id viene como @lid pero ya sabemos su teléfono, se siembra/actualiza la fila con
           // el JID de teléfono (el que usa un contacto importado o dado de alta a mano).
-          const canonicalId = toCanonicalJid(userId, c.id);
+          const canonicalId = await toCanonicalJid(userId, c.id);
           setSavedContactName(userId, c.id, c.name);
           if (canonicalId !== c.id) setSavedContactName(userId, canonicalId, c.name);
           ConversationService.updateNameIfKnown(c.id.split('@')[0], userId, c.name).catch((err: unknown) => {
@@ -671,10 +716,10 @@ return connectPromise;
     // Baileys ya resuelve el equivalente en formato de teléfono en `participantPn`/`senderPn`
     // cuando lo sabe — preferimos siempre esa forma canónica.
     const rawParticipantJid: string | undefined = isGroup ? msg.key?.participantPn || msg.key?.participant : undefined;
-    const participantJid: string | undefined = rawParticipantJid ? toCanonicalJid(userId, rawParticipantJid) : undefined;
+    const participantJid: string | undefined = rawParticipantJid ? await toCanonicalJid(userId, rawParticipantJid) : undefined;
     if (isGroup && !participantJid && !fromMe) return;
 
-    const canonicalIndividualJid: string | undefined = !isGroup ? msg.key?.senderPn || toCanonicalJid(userId, remoteJid) : undefined;
+    const canonicalIndividualJid: string | undefined = !isGroup ? msg.key?.senderPn || (await toCanonicalJid(userId, remoteJid)) : undefined;
     const senderJid = isGroup ? participantJid : canonicalIndividualJid;
 
     // Preferimos el nombre real guardado en la agenda (si Baileys ya lo sincronizó) por sobre el

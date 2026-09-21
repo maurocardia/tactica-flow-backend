@@ -292,6 +292,25 @@ export class BotContactService {
    * contra la lista existente ANTES de arrancar (si dos filas del archivo repiten el mismo
    * teléfono, la segunda ya cuenta como "actualización" en vez de otro "nuevo").
    */
+  /** Guarda el @lid de un contacto ya existente (best-effort, ver WhatsappService.resolveLids). */
+  static async setLid(userId: number, phoneJid: string, lidJid: string): Promise<void> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    await db.query(
+      'UPDATE bot_contacts SET lid = $1 WHERE user_id = $2 AND owner_jid = $3 AND jid = $4 AND (lid IS DISTINCT FROM $1)',
+      [lidJid, userId, ownerJid, phoneJid]
+    );
+  }
+
+  /** JID de teléfono de la fila (individual) que tiene este @lid guardado, si existe. */
+  static async findPhoneJidByLid(userId: number, lidJid: string): Promise<string | null> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query(
+      `SELECT jid FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND lid = $3 AND jid LIKE '%@s.whatsapp.net' LIMIT 1`,
+      [userId, ownerJid, lidJid]
+    );
+    return rows.length > 0 ? rows[0].jid : null;
+  }
+
   static async bulkImport(
     userId: number,
     contacts: { phone: string; name?: string; enabled: boolean; blacklisted?: boolean }[]
@@ -338,6 +357,20 @@ export class BotContactService {
         errors++;
         errorDetails.push(`${row?.phone ?? '?'}: ${err instanceof Error ? err.message : 'error desconocido'}`);
       }
+    }
+
+    // Guarda el @lid de cada contacto importado para reconocerlo cuando WhatsApp lo identifique solo
+    // por ese @lid (best-effort: si no hay sesión o falla, la importación igual ya quedó hecha).
+    try {
+      const phones = contacts
+        .map((c) => String(c?.phone ?? '').replace(/[^0-9]/g, ''))
+        .filter((p) => p.length >= 8);
+      const lids = await WhatsappService.resolveLids(userId, [...new Set(phones)]);
+      for (const [phone, lid] of lids) {
+        await this.setLid(userId, `${phone}@s.whatsapp.net`, lid);
+      }
+    } catch (err) {
+      console.error('⚠️ [BotContactService] No se pudieron guardar los @lid tras la importación:', err);
     }
 
     return { created, updated, blacklisted, errors, errorDetails };
