@@ -172,6 +172,18 @@ export class AdvisorService {
     return user?.handoffReservationMinutes ?? AdvisorService.DEFAULT_HANDOFF_RESERVATION_MINUTES;
   }
 
+  // Timeout de inactividad de un relay YA ACTIVO — distinto de getReservationMinutes (esa es la
+  // ventana antes/al asignar un asesor). Configurable aparte a pedido del usuario, mismo panel.
+  static readonly DEFAULT_RELAY_INACTIVITY_MINUTES = 60;
+
+  /** Minutos de silencio que tolera un relay activo de ESTE usuario antes de cerrarse solo — ver
+   * setRelayInactivityMinutes en AuthService y slideHandoffExpiry en botContact.service.ts. */
+  static async getRelayInactivityMinutes(userId: number): Promise<number> {
+    const { AuthService } = await import('./auth.service.js');
+    const user = await AuthService.getUserById(userId);
+    return user?.relayInactivityMinutes ?? AdvisorService.DEFAULT_RELAY_INACTIVITY_MINUTES;
+  }
+
   /**
    * Si esta conversación YA tiene un asesor reservado y esa reserva todavía no venció
    * (bot_contacts.handoff_advisor_id/handoff_expires_at — ver reserveHandoffAdvisor/
@@ -421,9 +433,11 @@ export class AdvisorService {
     }
 
     // Relay: se le reenvía tal cual al cliente, rotulado — ninguno de los dos ve el número real
-    // del otro. Se corre la reserva hacia adelante para que no venza en medio de una charla activa.
+    // del otro. Se corre la reserva hacia adelante (getRelayInactivityMinutes, no
+    // getReservationMinutes — son dos timeouts distintos) para que no venza en medio de una
+    // charla activa.
     const { WhatsappService } = await import('./whatsapp.service.js');
-    const minutes = await AdvisorService.getReservationMinutes(userId);
+    const minutes = await AdvisorService.getRelayInactivityMinutes(userId);
     try {
       await WhatsappService.sendTextMessage(activeClientJid.split('@')[0], `👨‍💼 *${advisor.name}:* ${text}`, userId);
     } catch (err) {

@@ -354,9 +354,9 @@ const SCHEMA_SQL = `
   -- asesor está en relay activo con un cliente, cada mensaje de cada lado se le reenvía tal cual
   -- al otro por el número del bot (ninguno ve el número real del otro) — reusa handoff_advisor_id/
   -- handoff_expires_at de arriba como marca de "relay activo", pero ahora ese vencimiento se corre
-  -- hacia adelante con cada mensaje relayado (sliding timeout): mientras haya actividad de
-  -- cualquiera de los dos lados no vence, y si se queda callado handoff_reservation_minutes se
-  -- cierra solo — mismo número configurable, sin sumar otro campo de timeout aparte.
+  -- hacia adelante con cada mensaje relayado (sliding timeout, ver relay_inactivity_minutes más
+  -- abajo): mientras haya actividad de cualquiera de los dos lados no vence, y si se queda callado
+  -- se cierra solo.
   --
   -- Un asesor atiende UN cliente activo a la vez (ver AdvisorService.pickFreeAdvisor: excluye a
   -- los que ya tienen una fila en bot_contacts con handoff_expires_at sin vencer). Si ninguno está
@@ -383,6 +383,14 @@ const SCHEMA_SQL = `
   -- posición actual — ver AdvisorQueueService y el mismo panel de "Asesores humanos" donde vive
   -- handoff_reservation_minutes de arriba.
   ALTER TABLE users ADD COLUMN IF NOT EXISTS queue_reminder_minutes INT NOT NULL DEFAULT 10;
+
+  -- Timeout de inactividad del RELAY ya activo (ver slideHandoffExpiry en botContact.service.ts) —
+  -- distinto de handoff_reservation_minutes: ese es cuánto dura la reserva ANTES/AL ASIGNAR
+  -- (evita un segundo asesor mientras el primero todavía no arrancó a atender); este es cuánto
+  -- silencio tolera una charla YA EN CURSO antes de darla por abandonada y cerrarla sola. Antes
+  -- reusaban el mismo número — se separan a pedido explícito del usuario, configurable aparte en
+  -- el mismo panel de "Asesores humanos".
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS relay_inactivity_minutes INT NOT NULL DEFAULT 60;
 
   -- Adjuntos multimedia de los bloques de flujo (Enviar Imagen/Video/Audio/Documento). Los bytes
   -- se guardan acá y se cargan en proceso para pasárselos a Baileys como Buffer — así no hace

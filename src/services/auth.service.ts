@@ -96,6 +96,9 @@ export interface User {
   /** Cada cuántos minutos un cliente en la cola de espera (sin asesor todavía) recibe un mensaje
    * con su posición actual — ver AdvisorQueueService y AdvisorQueueWorker. */
   queueReminderMinutes: number;
+  /** Minutos de silencio (de cualquiera de los dos lados) que tolera un relay YA ACTIVO antes de
+   * cerrarse solo — distinto de handoffReservationMinutes (esa es la ventana antes/al asignar). */
+  relayInactivityMinutes: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -125,6 +128,7 @@ function mapUserRow(row: any): User {
     botMode: row.bot_mode,
     handoffReservationMinutes: row.handoff_reservation_minutes,
     queueReminderMinutes: row.queue_reminder_minutes,
+    relayInactivityMinutes: row.relay_inactivity_minutes,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -237,6 +241,15 @@ export class AuthService {
   static async setQueueReminderMinutes(id: number, minutes: number): Promise<User | null> {
     const { rows } = await db.query(
       `UPDATE users SET queue_reminder_minutes = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [minutes, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setRelayInactivityMinutes(id: number, minutes: number): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET relay_inactivity_minutes = $1, updated_at = now() WHERE id = $2 RETURNING *`,
       [minutes, id]
     );
     if (rows.length === 0) return null;

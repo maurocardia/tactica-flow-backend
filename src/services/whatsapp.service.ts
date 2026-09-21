@@ -746,7 +746,7 @@ return connectPromise;
           } catch (err) {
             console.error(`⚠️ [WhatsApp] No se pudo reenviar el mensaje del cliente al asesor "${activeAdvisor.name}":`, err);
           }
-          const minutes = await AdvisorService.getReservationMinutes(userId);
+          const minutes = await AdvisorService.getRelayInactivityMinutes(userId);
           await BotContactService.slideHandoffExpiry(userId, botContactJid, minutes);
           return;
         }
