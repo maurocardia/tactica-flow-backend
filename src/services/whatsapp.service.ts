@@ -667,6 +667,19 @@ return connectPromise;
       phone = (canonicalIndividualJid || remoteJid).split('@')[0];
     }
 
+    // Si quien escribe es un asesor humano dando la orden de cerrar una atención ("FIN"/"LISTO" +
+    // número del cliente, ver AdvisorService.handleAdvisorCommand), se corta acá — no se guarda
+    // como conversación de cliente ni pasa por bot_contacts/gating/IA. Solo aplica a chats
+    // individuales entrantes (no grupos, no fromMe).
+    if (!isGroup && !fromMe) {
+      try {
+        const { AdvisorService } = await import('./advisor.service.js');
+        if (await AdvisorService.handleAdvisorCommand(userId, phone, text)) return;
+      } catch (err) {
+        console.error('⚠️ [WhatsApp] Error procesando comando de asesor:', err);
+      }
+    }
+
     const conversation = await ConversationService.findOrCreateByPhone(phone, contactName, userId, groupName);
 
     // Espejo liviano para el panel "Bot habilitado por contacto" (tabla bot_contacts, separada

@@ -118,7 +118,7 @@ export class BotEngineService {
               const result = await AdvisorService.handoffConversation(userId, customerPhoneNumber, contactName, fullHistory);
               if (result.status === 'handed_off') {
                 resolvedAdvisor = result.advisor;
-                text = `Perfecto, te estoy comunicando con ${result.advisor.name}, nuestro asesor. En breve te va a escribir por este mismo chat o te va a contactar al ${result.advisor.phone}.`;
+                text = `Perfecto, te estoy comunicando con ${result.advisor.name}, nuestro asesor. En breve te contacta para ayudarte, y cuando terminemos te voy a preguntar si quedó resuelta tu consulta.`;
               } else if (result.status === 'already_pending') {
                 // Ya se le había derivado antes en esta misma charla — no elegir otro asesor, solo
                 // avisarle que sigue en fila (ver AdvisorService.getActiveHandoffAdvisor).

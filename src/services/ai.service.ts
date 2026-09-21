@@ -440,7 +440,7 @@ export class AIService {
       if (handoffOutcome.advisor) {
         const text = handoffOutcome.alreadyPending
           ? `Ya te había comunicado con ${handoffOutcome.advisor.name}, nuestro asesor — en breve te responde. Si necesitás algo más mientras tanto, contame.`
-          : `Perfecto, te estoy comunicando con ${handoffOutcome.advisor.name}, nuestro asesor. En breve te va a escribir por este mismo chat o te va a contactar al ${handoffOutcome.advisor.phone}.`;
+          : `Perfecto, te estoy comunicando con ${handoffOutcome.advisor.name}, nuestro asesor. En breve te contacta para ayudarte, y cuando terminemos te voy a preguntar si quedó resuelta tu consulta.`;
         return { text, handoffAdvisor: handoffOutcome.advisor };
       }
 

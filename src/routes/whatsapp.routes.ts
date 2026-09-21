@@ -385,7 +385,9 @@ router.post('/bot-contacts/unpause', async (req: Request, res: Response) => {
   }
 
   try {
-    await BotContactService.releaseHandoffReservationByJid(req.user!.id, targetJid);
+    // finishAdvisory libera la reserva y, si había una vigente, le pregunta al cliente si quedó
+    // resuelta su consulta (mismo cierre que el comando "FIN" por WhatsApp — ver AdvisorService).
+    await AdvisorService.finishAdvisory(req.user!.id, targetJid);
     io.emit('bot_contact_updated', { jid: targetJid, handoffExpiresAt: null });
     res.json({ jid: targetJid, handoffExpiresAt: null });
   } catch (error: any) {
@@ -396,9 +398,14 @@ router.post('/bot-contacts/unpause', async (req: Request, res: Response) => {
 // Libera la reserva de asesor de un contacto — botón "Liberar asesor" del panel.
 router.put('/bot-contacts/:id/resume-bot', async (req: Request, res: Response) => {
   try {
-    const contact = await BotContactService.clearHandoffPause(Number(req.params.id));
-    if (!contact) return res.status(404).json({ error: 'Contacto no encontrado' });
-    res.json(contact);
+    const result = await BotContactService.clearHandoffPause(Number(req.params.id));
+    if (!result) return res.status(404).json({ error: 'Contacto no encontrado' });
+    if (result.hadActiveReservation) {
+      AdvisorService.notifyCustomerFollowUp(result.contact.userId, result.contact.jid).catch((err) => {
+        console.error('⚠️ [whatsapp.routes] No se pudo enviar el seguimiento al cliente tras liberar el asesor:', err);
+      });
+    }
+    res.json(result.contact);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al liberar la reserva de asesor de este contacto' });
   }
