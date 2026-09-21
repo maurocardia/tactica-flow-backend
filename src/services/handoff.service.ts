@@ -3,6 +3,7 @@ import { AdvisorService, Advisor } from './advisor.service.js';
 import { BotContactService } from './botContact.service.js';
 import { FlowEngineService } from './flowEngine.service.js';
 import { FlowHandoffRequest } from '../types/flow.js';
+import { looksLikePhoneDigits } from '../utils/whatsappIdentity.js';
 
 // Ejecuta el bloque "Contactar Asesor" del editor visual de flujos: elige un asesor real (ver
 // AdvisorService.pickNextAdvisor/getById) y lo notifica por WhatsApp desde la misma línea de la
@@ -130,10 +131,16 @@ export class HandoffService {
     try {
       const advisorDigits = advisor.phone.replace(/[^0-9]/g, '');
       const advisorJid = `${advisorDigits}@s.whatsapp.net`;
-      const template = ctx.request.notifyTemplate?.trim() || DEFAULT_NOTIFY_TEMPLATE;
+      let template = ctx.request.notifyTemplate?.trim() || DEFAULT_NOTIFY_TEMPLATE;
+      // Cliente con nombre de usuario de WhatsApp: su "teléfono" es un @lid, no un número — un link
+      // wa.me/<lid> no abre nada, así que se reemplaza por una indicación.
+      const phoneHidden = !looksLikePhoneDigits(ctx.customerPhoneDigits);
+      if (phoneHidden) {
+        template = template.replace(/https?:\/\/wa\.me\/\{telefono\}/gi, 'Respondele desde el chat (el cliente tiene el número oculto)');
+      }
       const text = FlowEngineService.applyVariables(template, {
         nombre: ctx.isGroup ? `${ctx.customerName} (${ctx.groupName || 'grupo'})` : ctx.customerName,
-        telefono: ctx.customerPhoneDigits,
+        telefono: phoneHidden ? 'número oculto (usuario de WhatsApp)' : ctx.customerPhoneDigits,
         asesor: advisor.name,
         mensaje: ctx.lastMessageText,
         fecha: new Date().toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' } as any),

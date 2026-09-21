@@ -1,5 +1,6 @@
 import { db } from '../config/db.js';
 import { WhatsappService } from './whatsapp.service.js';
+import { identityTypeOfJid, IdentityType } from '../utils/whatsappIdentity.js';
 
 export interface BotContact {
   id: number;
@@ -10,6 +11,9 @@ export interface BotContact {
   isGroup: boolean;
   botEnabled: boolean;
   isBlacklisted: boolean;
+  // 'lid' = usuario con nombre de usuario de WhatsApp (número oculto): el jid es un identificador
+  // interno, NO un teléfono — el panel no debe mostrarlo como "+número" ni usarlo para wa.me/envíos.
+  identityType: IdentityType;
   lastActivity: string;
   handoffAdvisorId: number | null;
   // Vencimiento de la RESERVA del asesor asignado — el bot sigue respondiendo con normalidad
@@ -33,6 +37,7 @@ function mapRow(row: any): BotContact {
     isGroup: row.is_group,
     botEnabled: row.bot_enabled,
     isBlacklisted: row.is_blacklisted,
+    identityType: identityTypeOfJid(row.jid),
     lastActivity: new Date(row.last_activity).toISOString(),
     handoffAdvisorId: row.handoff_advisor_id ?? null,
     handoffExpiresAt: row.handoff_expires_at ? new Date(row.handoff_expires_at).toISOString() : null,
@@ -134,7 +139,11 @@ export class BotContactService {
   /** Usado por WhatsappService para decidir si le responde o no a este contacto/grupo. */
   static async isEnabled(userId: number, jid: string): Promise<boolean> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';
-    const { rows } = await db.query('SELECT bot_enabled FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND jid = $3', [userId, ownerJid, jid]);
+    // Empareja por cualquiera de los dos identificadores (teléfono o @lid guardado).
+    const { rows } = await db.query(
+      'SELECT bot_enabled FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND (jid = $3 OR lid = $3) ORDER BY bot_enabled DESC LIMIT 1',
+      [userId, ownerJid, jid]
+    );
     return rows.length > 0 ? rows[0].bot_enabled : false;
   }
 
@@ -146,7 +155,7 @@ export class BotContactService {
   static async isBlacklisted(userId: number, jid: string): Promise<boolean> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';
     const { rows } = await db.query(
-      'SELECT is_blacklisted FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND jid = $3',
+      'SELECT is_blacklisted FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND (jid = $3 OR lid = $3) ORDER BY is_blacklisted DESC LIMIT 1',
       [userId, ownerJid, jid]
     );
     return rows.length > 0 ? rows[0].is_blacklisted : false;
@@ -187,7 +196,11 @@ export class BotContactService {
   static async getGatingFlags(userId: number, jid: string): Promise<GatingFlags> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';
     const { rows } = await db.query(
-      `SELECT is_blacklisted, bot_enabled FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
+      // Empareja por cualquiera de los dos identificadores (teléfono o @lid guardado); si hay dos
+      // filas (una por teléfono, otra por @lid), gana la bloqueada y después la habilitada.
+      `SELECT is_blacklisted, bot_enabled FROM bot_contacts
+       WHERE user_id = $1 AND owner_jid = $2 AND (jid = $3 OR lid = $3)
+       ORDER BY is_blacklisted DESC, bot_enabled DESC LIMIT 1`,
       [userId, ownerJid, jid]
     );
     if (rows.length === 0) {

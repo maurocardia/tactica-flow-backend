@@ -13,6 +13,7 @@ import { FlowMediaService } from './flowMedia.service.js';
 import { HandoffService } from './handoff.service.js';
 import { FlowEngineService } from './flowEngine.service.js';
 import { FlowOutboundMessage } from '../types/flow.js';
+import { looksLikePhoneDigits } from '../utils/whatsappIdentity.js';
 
 export type WhatsappConnectionStatus = 'disconnected' | 'connecting' | 'qr_ready' | 'connected';
 
@@ -948,7 +949,9 @@ return connectPromise;
     if (phone.includes('-') && phone.startsWith('120363')) return `${phone.split('-')[0]}@g.us`;
     if (phone.startsWith('120363')) return `${phone}@g.us`;
     const cleanPhone = phone.replace(/[^0-9]/g, '');
-    return `${cleanPhone}@s.whatsapp.net`;
+    // Un "teléfono" que no parece uno real (más de 13 dígitos) es el @lid de un usuario con número
+    // oculto — armarle @s.whatsapp.net apuntaba a un número inexistente.
+    return looksLikePhoneDigits(cleanPhone) ? `${cleanPhone}@s.whatsapp.net` : `${cleanPhone}@lid`;
   }
 
   static async sendTextMessage(phone: string, text: string, userId?: number): Promise<boolean> {
