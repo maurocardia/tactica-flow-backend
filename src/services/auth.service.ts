@@ -90,6 +90,9 @@ export interface User {
   botReplyDelayMinMs: number;
   botReplyDelayMaxMs: number;
   botMode: BotMode;
+  /** Minutos que dura la reserva de un asesor antes de vencer sola (ver AdvisorService.
+   * getReservationMinutes/DEFAULT_HANDOFF_RESERVATION_MINUTES) — configurable por cuenta. */
+  handoffReservationMinutes: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -117,6 +120,7 @@ function mapUserRow(row: any): User {
     botReplyDelayMinMs: row.bot_reply_delay_min_ms,
     botReplyDelayMaxMs: row.bot_reply_delay_max_ms,
     botMode: row.bot_mode,
+    handoffReservationMinutes: row.handoff_reservation_minutes,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -212,6 +216,15 @@ export class AuthService {
     const { rows } = await db.query(
       `UPDATE users SET bot_reply_to_all = $1, updated_at = now() WHERE id = $2 RETURNING *`,
       [enabled, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setHandoffReservationMinutes(id: number, minutes: number): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET handoff_reservation_minutes = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [minutes, id]
     );
     if (rows.length === 0) return null;
     return mapUserRow(rows[0]);

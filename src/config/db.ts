@@ -336,10 +336,19 @@ const SCHEMA_SQL = `
   END $$;
   CREATE INDEX IF NOT EXISTS idx_bot_contacts_handoff ON bot_contacts(user_id, owner_jid, jid, handoff_expires_at);
 
-  -- users.handoff_pause_minutes (int, default 120) quedó sin uso — la duración de la reserva de
-  -- asesor ahora es un valor fijo de 30 minutos (ver AdvisorService), no configurable por cuenta.
-  -- Se deja la columna en la base (no vale la pena una migración de DROP por esto) pero ya no se
-  -- lee desde ningún lado.
+  -- Duración configurable de la reserva de asesor (por cuenta) — antes era un valor fijo de 30
+  -- minutos en AdvisorService.DEFAULT_HANDOFF_RESERVATION_MINUTES, que ahora es solo el default
+  -- cuando esta columna es NULL. Reutiliza el nombre de una columna vieja ("handoff_pause_minutes",
+  -- del modelo anterior de pausa manual que nunca se llegó a usar) — se dropea si quedó de antes
+  -- en vez de migrarla, porque su valor tenía un significado distinto (minutos de pausa del bot,
+  -- no de reserva) y no vale la pena arrastrarlo.
+  DO $$
+  BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'handoff_pause_minutes') THEN
+      ALTER TABLE users DROP COLUMN handoff_pause_minutes;
+    END IF;
+  END $$;
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS handoff_reservation_minutes INT NOT NULL DEFAULT 30;
 
   -- Adjuntos multimedia de los bloques de flujo (Enviar Imagen/Video/Audio/Documento). Los bytes
   -- se guardan acá y se cargan en proceso para pasárselos a Baileys como Buffer — así no hace
