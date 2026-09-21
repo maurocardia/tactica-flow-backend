@@ -367,11 +367,12 @@ router.put('/bot-contacts/:id/enabled', async (req: Request, res: Response) => {
   }
 });
 
-// Reactiva el bot para un contacto pausado por una derivación a asesor (bloque "Contactar
-// Asesor" del flujo) — botón "Finalizar atención y reactivar bot" de la tarjeta del chat activo
-// (Issue #38 [BE-053] / #32 [FE-049]). A diferencia de PUT /bot-contacts/:id/resume-bot (de abajo,
-// usado desde la lista de Contactos del panel, donde ya se conoce el id de la fila), este va por
-// jid/teléfono porque el chat activo solo expone eso.
+// Libera la reserva de asesor de un contacto (bloque "Contactar Asesor" del flujo) — botón
+// "Finalizar atención" de la tarjeta del chat activo. NO afecta si el bot responde (nunca lo
+// bloqueó) — solo permite que un próximo pedido de asesor elija a cualquiera sin esperar los 30
+// minutos. A diferencia de PUT /bot-contacts/:id/resume-bot (de abajo, usado desde la lista de
+// Contactos del panel, donde ya se conoce el id de la fila), este va por jid/teléfono porque el
+// chat activo solo expone eso.
 router.post('/bot-contacts/unpause', async (req: Request, res: Response) => {
   const { jid, phone } = req.body;
   let targetJid: string | undefined = typeof jid === 'string' && jid.trim() ? jid.trim() : undefined;
@@ -384,23 +385,22 @@ router.post('/bot-contacts/unpause', async (req: Request, res: Response) => {
   }
 
   try {
-    await BotContactService.clearHandoffPauseByJid(req.user!.id, targetJid);
-    io.emit('bot_contact_updated', { jid: targetJid, handoffPausedUntil: null });
-    res.json({ jid: targetJid, handoffPausedUntil: null });
+    await BotContactService.releaseHandoffReservationByJid(req.user!.id, targetJid);
+    io.emit('bot_contact_updated', { jid: targetJid, handoffExpiresAt: null });
+    res.json({ jid: targetJid, handoffExpiresAt: null });
   } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Error al reactivar el bot para este contacto' });
+    res.status(500).json({ error: error.message || 'Error al liberar la reserva de asesor de este contacto' });
   }
 });
 
-// Reactiva el bot para un contacto pausado por una derivación a asesor (bloque "Contactar
-// Asesor" del flujo) — botón "Reactivar bot" del panel, ver HandoffService/getGatingFlags.
+// Libera la reserva de asesor de un contacto — botón "Liberar asesor" del panel.
 router.put('/bot-contacts/:id/resume-bot', async (req: Request, res: Response) => {
   try {
     const contact = await BotContactService.clearHandoffPause(Number(req.params.id));
     if (!contact) return res.status(404).json({ error: 'Contacto no encontrado' });
     res.json(contact);
   } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Error al reactivar el bot para este contacto' });
+    res.status(500).json({ error: error.message || 'Error al liberar la reserva de asesor de este contacto' });
   }
 });
 

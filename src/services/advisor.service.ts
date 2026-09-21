@@ -109,19 +109,26 @@ export class AdvisorService {
     return rows.length > 0 ? mapRow(rows[0]) : null;
   }
 
+  // El bot NUNCA deja de responder por una derivación a asesor (a pedido explícito del usuario) —
+  // esto solo evita asignarle un SEGUNDO asesor al mismo cliente mientras el primero todavía tiene
+  // tiempo de contactarlo. Pasados estos minutos sin que se libere a mano (panel/FINISH_FLOW), la
+  // reserva vence sola y un nuevo pedido de asesor puede volver a asignar a cualquiera.
+  static readonly HANDOFF_RESERVATION_MINUTES = 30;
+
   /**
-   * Si esta conversación YA tiene un asesor asignado sin cerrar (bot_contacts.handoff_advisor_id
-   * — ver setHandoffPause/clearHandoffPauseByJid/clearHandoffPauseKeepAdvisorByJid en
-   * botContact.service.ts), lo devuelve — para que ningún camino de derivación (regla legacy,
-   * tool de IA, bloque "Contactar Asesor" del flujo) le asigne un SEGUNDO asesor al mismo cliente
-   * por accidente, ni siquiera después de que el trigger maestro le destrabó el bot para que
-   * pueda seguir navegando el menú.
+   * Si esta conversación YA tiene un asesor reservado y esa reserva todavía no venció
+   * (bot_contacts.handoff_advisor_id/handoff_expires_at — ver reserveHandoffAdvisor/
+   * releaseHandoffReservationByJid en botContact.service.ts), lo devuelve — para que ningún camino
+   * de derivación (regla legacy, tool de IA, bloque "Contactar Asesor" del flujo) le asigne un
+   * SEGUNDO asesor al mismo cliente por accidente. Pasados los 30 minutos, o si nadie liberó la
+   * reserva a mano, devuelve null igual — el cliente puede pedir un asesor de nuevo con total
+   * normalidad.
    */
   static async getActiveHandoffAdvisor(userId: number, jid: string): Promise<Advisor | null> {
     const { BotContactService } = await import('./botContact.service.js');
-    const gating = await BotContactService.getGatingFlags(userId, jid);
-    if (!gating.handoffAdvisorId) return null;
-    return AdvisorService.getById(userId, gating.handoffAdvisorId);
+    const reservation = await BotContactService.getHandoffReservation(userId, jid);
+    if (!reservation.advisorId || !reservation.expiresAt || reservation.expiresAt <= new Date()) return null;
+    return AdvisorService.getById(userId, reservation.advisorId);
   }
 
   /**

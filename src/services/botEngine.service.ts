@@ -36,8 +36,8 @@ export class BotEngineService {
     sourceKbIds: number[];
     handoff?: FlowHandoffRequest;
     // Cuando el handoff se resolvió acá mismo (no en el editor de flujos) — ver
-    // AdvisorService.handoffConversation — whatsapp.service.ts usa esto para pausar el bot sin
-    // volver a elegir/notificar al asesor (ver HandoffContext.resolvedAdvisor).
+    // AdvisorService.handoffConversation — whatsapp.service.ts usa esto para reservar el asesor
+    // sin volver a elegir/notificar (ver HandoffContext.resolvedAdvisor).
     resolvedAdvisor?: Advisor;
   } | null> {
     const textLower = incomingText.trim().toLowerCase();
@@ -91,7 +91,7 @@ export class BotEngineService {
               messages: [{ kind: 'text', text: aiReply }],
               source: 'HANDOFF',
               sourceKbIds,
-              handoff: { nodeId: 'ai_tool', advisorMode: 'auto', advisorId: null, pauseMinutes: null },
+              handoff: { nodeId: 'ai_tool', advisorMode: 'auto', advisorId: null },
               resolvedAdvisor: handoffAdvisor
             };
           }
@@ -136,7 +136,7 @@ export class BotEngineService {
             source: resolvedAdvisor ? 'HANDOFF' : 'KEYWORD_RULE',
             sourceKbIds: [],
             ...(resolvedAdvisor
-              ? { handoff: { nodeId: 'keyword_rule', advisorMode: 'auto', advisorId: null, pauseMinutes: null }, resolvedAdvisor }
+              ? { handoff: { nodeId: 'keyword_rule', advisorMode: 'auto', advisorId: null }, resolvedAdvisor }
               : {})
           };
         }
@@ -190,7 +190,7 @@ export class BotEngineService {
         messages: [{ kind: 'text', text: aiReply }],
         source: 'HANDOFF',
         sourceKbIds,
-        handoff: { nodeId: 'ai_tool', advisorMode: 'auto', advisorId: null, pauseMinutes: null },
+        handoff: { nodeId: 'ai_tool', advisorMode: 'auto', advisorId: null },
         resolvedAdvisor: handoffAdvisor
       };
     }

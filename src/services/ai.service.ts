@@ -313,7 +313,7 @@ function buildHandoffTool(
   customerName: string,
   conversationHistory: SimpleMessage[],
   userMessage: string,
-  outcome: { advisor?: Advisor }
+  outcome: { advisor?: Advisor; alreadyPending?: boolean }
 ) {
   return {
     handoff_to_advisor: tool({
@@ -332,6 +332,11 @@ function buildHandoffTool(
           return 'No hay asesores humanos configurados todavía — informale al cliente que en breve alguien del equipo se va a comunicar, sin inventar un nombre ni un tiempo exacto.';
         }
         outcome.advisor = result.advisor;
+        // Se guarda el status además del texto para el modelo — si la llamada al proveedor de IA
+        // falla DESPUÉS de que esta tool ya corrió (ver el catch de processMessage más abajo), el
+        // fallback necesita saber si esto era una derivación nueva o si el cliente ya estaba en
+        // fila, para no confirmarle "te estoy comunicando con X" por segunda vez.
+        outcome.alreadyPending = result.status === 'already_pending';
         if (result.status === 'already_pending') {
           return `A este cliente ya se lo había derivado antes a ${result.advisor.name} en esta misma charla y sigue en fila — NO lo derives de nuevo. Avisale de forma breve y cordial que ${result.advisor.name} ya fue notificado y le va a responder pronto.`;
         }
@@ -362,6 +367,15 @@ export class AIService {
       return { text: 'Lo siento, ocurrió un error al procesar tu mensaje. Un asesor te atenderá pronto.' };
     }
 
+    // Declarado ANTES del try (no adentro) a propósito: la tool handoff_to_advisor puede elegir y
+    // notificar al asesor con éxito y AÚN ASÍ terminar en el catch de abajo, si el paso siguiente
+    // del modelo (redactar la respuesta final incorporando el resultado de la tool) falla por su
+    // cuenta — un `const` declarado dentro del try no es visible en el catch, así que antes esa
+    // derivación exitosa se perdía del todo: se le mandaba al cliente el mensaje genérico de error
+    // y nunca se guardaba la reserva del asesor (bot_contacts.handoff_advisor_id/handoff_expires_at
+    // quedaban en null pese a que advisors.handoff_count ya se había incrementado).
+    const handoffOutcome: { advisor?: Advisor; alreadyPending?: boolean } = {};
+
     try {
       let system: string;
 
@@ -386,7 +400,6 @@ export class AIService {
       // desde qué sesión de WhatsApp, así que la tool ni se ofrece.
       const hasTacticaCreds = !!(tacticaCredentials.usuario && tacticaCredentials.contrasena);
       const canHandoff = mode === 'bot' && !!userId && !!customerPhone;
-      const handoffOutcome: { advisor?: Advisor } = {};
 
       const result = await generateTextWithRetry({
         model,
@@ -401,7 +414,16 @@ export class AIService {
                   ? buildHandoffTool(userId!, customerPhone!, customerName || 'Cliente', recentHistory, userMessage, handoffOutcome)
                   : {})
               },
-              maxSteps: 3
+              maxSteps: 3,
+              // Los modelos Gemini 3.x devuelven un "thought" en cada function call y exigen que
+              // se lo mandemos de vuelta tal cual en el siguiente paso (thought_signature) — nuestra
+              // versión del AI SDK todavía no hace ese round-trip, así que CUALQUIER llamada con
+              // tools + más de un paso (maxSteps>1, como acá) le pega un 400 fijo a Gemini apenas
+              // intenta redactar el texto final después de ejecutar una tool ("Function call is
+              // missing a thought_signature..."). La tool en sí SÍ corre bien (por eso el asesor
+              // igual quedaba elegido/notificado) — lo que fallaba era el paso siguiente. Apagar el
+              // "thinking" extendido evita que Gemini pida ese campo, sin tocar el resto del modelo.
+              providerOptions: { google: { thinkingConfig: { thinkingBudget: 0 } } }
             }
           : {})
       });
@@ -409,6 +431,19 @@ export class AIService {
       return { text: result.text || 'Sin respuesta', handoffAdvisor: handoffOutcome.advisor };
     } catch (error: any) {
       console.error('❌ Error en AIService.processMessage:', error?.message || error);
+
+      // La tool handoff_to_advisor ya eligió/notificó a un asesor real (con éxito) ANTES de que
+      // este error pasara — ver el comentario de handoffOutcome más arriba. No hay que perder eso:
+      // se le confirma al cliente que igual quedó derivado, en vez del mensaje genérico de error
+      // que sonaría a que no pasó nada (y sin esto tampoco se guardaba la reserva del asesor). El
+      // texto cambia si ya estaba en fila desde antes — si no, parece una derivación nueva cada vez.
+      if (handoffOutcome.advisor) {
+        const text = handoffOutcome.alreadyPending
+          ? `Ya te había comunicado con ${handoffOutcome.advisor.name}, nuestro asesor — en breve te responde. Si necesitás algo más mientras tanto, contame.`
+          : `Perfecto, te estoy comunicando con ${handoffOutcome.advisor.name}, nuestro asesor. En breve te va a escribir por este mismo chat o te va a contactar al ${handoffOutcome.advisor.phone}.`;
+        return { text, handoffAdvisor: handoffOutcome.advisor };
+      }
+
       if (!hasApiKey) {
         return { text: `Disculpas, la clave de IA de ${providerLabel} no está configurada en el servidor.` };
       }

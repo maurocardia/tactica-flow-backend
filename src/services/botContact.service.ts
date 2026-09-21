@@ -12,14 +12,15 @@ export interface BotContact {
   isBlacklisted: boolean;
   lastActivity: string;
   handoffAdvisorId: number | null;
-  handoffPausedUntil: string | null;
+  // Vencimiento de la RESERVA del asesor asignado — el bot sigue respondiendo con normalidad
+  // mientras tanto, esto solo evita que se derive al mismo cliente a otro asesor antes de tiempo.
+  // Ver AdvisorService.getActiveHandoffAdvisor.
+  handoffExpiresAt: string | null;
 }
 
 export interface GatingFlags {
   isBlacklisted: boolean;
   botEnabled: boolean;
-  handoffPausedUntil: Date | null;
-  handoffAdvisorId: number | null;
 }
 
 function mapRow(row: any): BotContact {
@@ -34,7 +35,7 @@ function mapRow(row: any): BotContact {
     isBlacklisted: row.is_blacklisted,
     lastActivity: new Date(row.last_activity).toISOString(),
     handoffAdvisorId: row.handoff_advisor_id ?? null,
-    handoffPausedUntil: row.handoff_paused_until ? new Date(row.handoff_paused_until).toISOString() : null,
+    handoffExpiresAt: row.handoff_expires_at ? new Date(row.handoff_expires_at).toISOString() : null,
   };
 }
 
@@ -176,90 +177,84 @@ export class BotContactService {
   }
 
   /**
-   * Una sola consulta con TODO lo que el camino caliente de un mensaje entrante necesita chequear
-   * antes de dejar responder al bot (blacklist, switch por contacto, pausa por handoff) — antes
-   * eran dos round-trips separados (isBlacklisted + isEnabled); agregar la pausa como una tercera
-   * consulta habría sumado latencia a CADA mensaje. Si la fila todavía no existe (contacto nuevo,
-   * el upsert de handleIncomingMessage es fire-and-forget y puede no haber terminado todavía),
-   * devuelve defaults seguros: no bloqueado, no habilitado, sin pausa.
+   * Lo único que el camino caliente de un mensaje entrante necesita chequear antes de dejar
+   * responder al bot: blacklist y el switch por contacto — ya NO incluye nada de handoff, porque
+   * una derivación a asesor no bloquea al bot (ver AdvisorService.getActiveHandoffAdvisor para la
+   * reserva de asesor, que es un chequeo aparte y no afecta si el bot responde o no). Si la fila
+   * todavía no existe (contacto nuevo, el upsert de handleIncomingMessage es fire-and-forget y
+   * puede no haber terminado todavía), devuelve defaults seguros: no bloqueado, no habilitado.
    */
   static async getGatingFlags(userId: number, jid: string): Promise<GatingFlags> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';
     const { rows } = await db.query(
-      `SELECT is_blacklisted, bot_enabled, handoff_paused_until, handoff_advisor_id
-       FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
+      `SELECT is_blacklisted, bot_enabled FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
       [userId, ownerJid, jid]
     );
     if (rows.length === 0) {
-      return { isBlacklisted: false, botEnabled: false, handoffPausedUntil: null, handoffAdvisorId: null };
+      return { isBlacklisted: false, botEnabled: false };
     }
-    const row = rows[0];
-    return {
-      isBlacklisted: row.is_blacklisted,
-      botEnabled: row.bot_enabled,
-      handoffPausedUntil: row.handoff_paused_until ? new Date(row.handoff_paused_until) : null,
-      handoffAdvisorId: row.handoff_advisor_id ?? null,
-    };
+    return { isBlacklisted: rows[0].is_blacklisted, botEnabled: rows[0].bot_enabled };
   }
 
-  /** Pausa el bot para esta conversación puntual tras derivarla a un asesor (bloque "Contactar
-   * Asesor" del flujo) — ver HandoffService. `minutes` 0/null pausa hasta reactivación manual
-   * (handoff_paused_until queda en una fecha muy lejana en vez de NULL, para no confundirla con
-   * "nunca hubo un handoff"). */
-  static async setHandoffPause(userId: number, jid: string, advisorId: number | null, minutes: number | null): Promise<void> {
+  /**
+   * Reserva este asesor para esta conversación por 30 minutos fijos (ver AdvisorService.
+   * HANDOFF_RESERVATION_MINUTES) — NO afecta si el bot responde o no, solo evita que otro camino
+   * de derivación le asigne un SEGUNDO asesor al mismo cliente mientras el primero todavía tiene
+   * tiempo de contactarlo. Pasados los 30 minutos, la reserva vence sola (no hace falta limpiarla
+   * a mano) y un nuevo pedido de asesor puede volver a asignar.
+   */
+  static async reserveHandoffAdvisor(userId: number, jid: string, advisorId: number | null, minutes: number): Promise<void> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';
-    const pausedUntil = minutes && minutes > 0 ? new Date(Date.now() + minutes * 60 * 1000) : new Date('9999-01-01T00:00:00Z');
+    const expiresAt = new Date(Date.now() + minutes * 60 * 1000);
     await db.query(
       `UPDATE bot_contacts
-       SET handoff_advisor_id = $1, handoff_started_at = now(), handoff_paused_until = $2
+       SET handoff_advisor_id = $1, handoff_started_at = now(), handoff_expires_at = $2
        WHERE user_id = $3 AND owner_jid = $4 AND jid = $5`,
-      [advisorId, pausedUntil, userId, ownerJid, jid]
+      [advisorId, expiresAt, userId, ownerJid, jid]
     );
   }
 
   /**
-   * CIERRA el caso del todo — direccionado por jid en vez del id de fila, para los caminos que no
-   * tienen ese id a mano: el botón "Finalizar atención y reactivar bot" de la tarjeta del chat
-   * activo (solo conoce el jid abierto en WhatsApp Web) y el nodo terminal FINISH_FLOW del editor
-   * de flujos. Limpia handoff_advisor_id además de la pausa — es una decisión explícita de que
-   * esta conversación terminó, así que el próximo "Contactar Asesor" debe poder elegir uno nuevo
-   * sin restricciones. NO usar esto para "destrabar" al cliente sin cerrar el caso — ver
-   * clearHandoffPauseKeepAdvisorByJid.
+   * Libera la reserva de asesor ANTES de que venza sola — direccionado por jid en vez del id de
+   * fila, para los caminos que no tienen ese id a mano: el botón "Finalizar atención" de la
+   * tarjeta del chat activo (solo conoce el jid abierto en WhatsApp Web) y el nodo terminal
+   * FINISH_FLOW del editor de flujos. Es una decisión explícita de que esta conversación ya no
+   * necesita a ese asesor puntual, así que el próximo "Contactar Asesor" puede elegir a cualquiera
+   * sin esperar los 30 minutos.
    */
-  static async clearHandoffPauseByJid(userId: number, jid: string): Promise<void> {
+  static async releaseHandoffReservationByJid(userId: number, jid: string): Promise<void> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';
     await db.query(
       `UPDATE bot_contacts
-       SET handoff_paused_until = NULL, handoff_advisor_id = NULL
+       SET handoff_expires_at = NULL, handoff_advisor_id = NULL
        WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
       [userId, ownerJid, jid]
     );
   }
 
-  /**
-   * Destraba al cliente (el bot vuelve a responderle) SIN cerrar el caso: deja handoff_advisor_id
-   * intacto a propósito. La usa el trigger maestro de flujo (WhatsappService.
-   * tryBreakHandoffPauseWithMasterTrigger) cuando un cliente ya derivado escribe algo tipo "menú"
-   * para poder seguir navegando el bot — si después vuelve a pedir un asesor, AdvisorService.
-   * getActiveHandoffAdvisor todavía lo encuentra y evita derivarlo a una SEGUNDA persona.
-   */
-  static async clearHandoffPauseKeepAdvisorByJid(userId: number, jid: string): Promise<void> {
-    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
-    await db.query(
-      `UPDATE bot_contacts SET handoff_paused_until = NULL WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
-      [userId, ownerJid, jid]
-    );
-  }
-
-  /** Botón "Reactivar bot" del panel — decisión humana explícita de cerrar el caso, igual que
-   * clearHandoffPauseByJid: también libera handoff_advisor_id (si no, un contacto reactivado a
-   * mano desde acá quedaría "reservado" para el mismo asesor para siempre). */
+  /** Botón "Liberar asesor" del panel — misma decisión que releaseHandoffReservationByJid, pero
+   * direccionado por el id de fila (lo que el panel tiene a mano) en vez del jid. */
   static async clearHandoffPause(id: number): Promise<BotContact | null> {
     const { rows } = await db.query(
-      `UPDATE bot_contacts SET handoff_paused_until = NULL, handoff_advisor_id = NULL WHERE id = $1 RETURNING *`,
+      `UPDATE bot_contacts SET handoff_expires_at = NULL, handoff_advisor_id = NULL WHERE id = $1 RETURNING *`,
       [id]
     );
     return rows.length > 0 ? mapRow(rows[0]) : null;
+  }
+
+  /** Para AdvisorService.getActiveHandoffAdvisor: a quién está reservada esta conversación ahora
+   * mismo, y hasta cuándo. null/expirado = sin reserva activa. */
+  static async getHandoffReservation(userId: number, jid: string): Promise<{ advisorId: number | null; expiresAt: Date | null }> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query(
+      `SELECT handoff_advisor_id, handoff_expires_at FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
+      [userId, ownerJid, jid]
+    );
+    if (rows.length === 0) return { advisorId: null, expiresAt: null };
+    return {
+      advisorId: rows[0].handoff_advisor_id ?? null,
+      expiresAt: rows[0].handoff_expires_at ? new Date(rows[0].handoff_expires_at) : null,
+    };
   }
 
   /** Borra un contacto/grupo puntual de la lista — botón "X" del panel. Solo afecta bot_contacts. */

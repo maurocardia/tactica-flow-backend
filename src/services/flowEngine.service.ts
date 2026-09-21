@@ -293,7 +293,6 @@ export class FlowEngineService {
           advisorMode: node.data?.advisorMode === 'fixed' ? 'fixed' : 'auto',
           advisorId: node.data?.advisorId ?? null,
           notifyTemplate: node.data?.advisorNotifyTemplate,
-          pauseMinutes: typeof node.data?.pauseBotMinutes === 'number' ? node.data.pauseBotMinutes : null,
         };
         // Corta acá: derivar a un asesor termina la cadena automática de este mensaje.
         return { messages, action, handoff, endNodeId: nodeId };
@@ -330,11 +329,11 @@ export class FlowEngineService {
 
   // Compartido por los dos puntos de retorno de processMessage (opción de menú elegida / trigger
   // global matcheado) — decide qué hacer con el estado en memoria según cómo terminó la cadena de
-  // nodos. Nodo terminal FINISH_FLOW (Issue #38 [BE-053]): limpia la posición en el flujo Y
-  // cualquier pausa de handoff que hubiera para este contacto — así una charla que ya se cerró no
-  // queda ni "atascada" esperando una respuesta que nunca va a llegar, ni bloqueada por una
-  // derivación vieja. Cualquier otro final: comportamiento histórico (guarda el nodo, arma el
-  // timer de "sin respuesta" si corresponde).
+  // nodos. Nodo terminal FINISH_FLOW: limpia la posición en el flujo Y cualquier reserva de asesor
+  // que hubiera para este contacto — así una charla que ya se cerró no queda ni "atascada"
+  // esperando una respuesta que nunca va a llegar, ni con un asesor viejo todavía reservado.
+  // Cualquier otro final: comportamiento histórico (guarda el nodo, arma el timer de "sin
+  // respuesta" si corresponde).
   private static async finalizeChainResult(
     customerPhoneNumber: string,
     finalMessages: FlowOutboundMessage[],
@@ -349,9 +348,9 @@ export class FlowEngineService {
       if (sendContext) {
         try {
           const { BotContactService } = await import('./botContact.service.js');
-          await BotContactService.clearHandoffPauseByJid(sendContext.userId, sendContext.botContactJid);
+          await BotContactService.releaseHandoffReservationByJid(sendContext.userId, sendContext.botContactJid);
         } catch (err) {
-          console.error('❌ [FlowEngineService] Error limpiando la pausa de handoff tras FINISH_FLOW:', err);
+          console.error('❌ [FlowEngineService] Error liberando la reserva de asesor tras FINISH_FLOW:', err);
         }
       }
     } else {
