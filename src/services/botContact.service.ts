@@ -233,13 +233,22 @@ export class BotContactService {
   }
 
   /** Botón "Liberar asesor" del panel — misma decisión que releaseHandoffReservationByJid, pero
-   * direccionado por el id de fila (lo que el panel tiene a mano) en vez del jid. */
-  static async clearHandoffPause(id: number): Promise<BotContact | null> {
+   * direccionado por el id de fila (lo que el panel tiene a mano) en vez del jid. Devuelve también
+   * si HABÍA una reserva vigente antes de limpiarla (con el CTE "prev", capturado antes del
+   * UPDATE) — la ruta lo usa para decidir si le manda al cliente el mensaje de seguimiento
+   * ("¿quedó resuelta tu consulta?", ver AdvisorService.notifyCustomerFollowUp). */
+  static async clearHandoffPause(id: number): Promise<{ contact: BotContact; hadActiveReservation: boolean } | null> {
     const { rows } = await db.query(
-      `UPDATE bot_contacts SET handoff_expires_at = NULL, handoff_advisor_id = NULL WHERE id = $1 RETURNING *`,
+      `WITH prev AS (SELECT handoff_advisor_id, handoff_expires_at FROM bot_contacts WHERE id = $1)
+       UPDATE bot_contacts SET handoff_expires_at = NULL, handoff_advisor_id = NULL
+       WHERE id = $1
+       RETURNING *, (SELECT handoff_advisor_id FROM prev) AS prev_advisor_id, (SELECT handoff_expires_at FROM prev) AS prev_expires_at`,
       [id]
     );
-    return rows.length > 0 ? mapRow(rows[0]) : null;
+    if (rows.length === 0) return null;
+    const row = rows[0];
+    const hadActiveReservation = !!row.prev_advisor_id && !!row.prev_expires_at && new Date(row.prev_expires_at) > new Date();
+    return { contact: mapRow(row), hadActiveReservation };
   }
 
   /** Para AdvisorService.getActiveHandoffAdvisor: a quién está reservada esta conversación ahora

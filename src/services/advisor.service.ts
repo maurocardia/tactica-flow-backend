@@ -69,6 +69,19 @@ export class AdvisorService {
     return (rowCount ?? 0) > 0;
   }
 
+  /** Busca un asesor activo por teléfono (comparando solo dígitos) — para reconocer cuando quien
+   * le escribe al número del bot es el propio asesor (comando "FIN" por WhatsApp, ver
+   * handleAdvisorCommand) y no un cliente cualquiera. */
+  static async findByPhone(userId: number, phone: string): Promise<Advisor | null> {
+    const digits = phone.replace(/[^0-9]/g, '');
+    if (!digits) return null;
+    const { rows } = await db.query(
+      `SELECT * FROM advisors WHERE user_id = $1 AND is_active = true AND regexp_replace(phone, '[^0-9]', '', 'g') = $2`,
+      [userId, digits]
+    );
+    return rows.length > 0 ? mapRow(rows[0]) : null;
+  }
+
   static async resetCounts(userId: number): Promise<void> {
     await db.query('UPDATE advisors SET handoff_count = 0, last_handoff_at = NULL WHERE user_id = $1', [userId]);
   }
@@ -196,5 +209,112 @@ export class AdvisorService {
     }
 
     return { status: 'handed_off', advisor, summary };
+  }
+
+  /** Le manda al CLIENTE el mensaje de seguimiento después de que se cierra la atención humana —
+   * usado tanto por finishAdvisory como por la ruta PUT /bot-contacts/:id/resume-bot (que limpia
+   * la reserva por id de fila en vez de por jid, ver clearHandoffPause). */
+  static async notifyCustomerFollowUp(userId: number, jid: string): Promise<void> {
+    const { WhatsappService } = await import('./whatsapp.service.js');
+    await WhatsappService.sendTextMessage(jid.split('@')[0], '¿Quedó resuelta tu consulta? Contame si necesitás algo más 🙂', userId);
+  }
+
+  /**
+   * Cierra la atención humana de esta conversación: libera la reserva (bot_contacts.
+   * handoff_advisor_id/handoff_expires_at) para que un próximo pedido de asesor pueda asignar a
+   * cualquiera sin esperar los 30 minutos, y si HABÍA una reserva vigente le pregunta al cliente
+   * si quedó resuelta su consulta. Usado por el botón "Finalizar atención" del panel (POST
+   * /bot-contacts/unpause) y por el comando "FIN" que el asesor manda por WhatsApp (ver
+   * handleAdvisorCommand más abajo).
+   *
+   * Si se pasa `expectedAdvisorId`, solo actúa cuando la reserva vigente es justo de ESE asesor —
+   * evita que el comando "FIN" de un asesor cierre por error la atención de otro (ej. si escribe
+   * mal el número del cliente y ese número resulta tener una reserva de un compañero).
+   */
+  static async finishAdvisory(
+    userId: number,
+    jid: string,
+    opts?: { expectedAdvisorId?: number }
+  ): Promise<'notified' | 'no_active_reservation' | 'mismatch'> {
+    const { BotContactService } = await import('./botContact.service.js');
+    const reservation = await BotContactService.getHandoffReservation(userId, jid);
+    const active = !!reservation.advisorId && !!reservation.expiresAt && reservation.expiresAt > new Date();
+
+    if (opts?.expectedAdvisorId && (!active || reservation.advisorId !== opts.expectedAdvisorId)) {
+      return 'mismatch';
+    }
+
+    await BotContactService.releaseHandoffReservationByJid(userId, jid);
+    if (!active) return 'no_active_reservation';
+
+    try {
+      await AdvisorService.notifyCustomerFollowUp(userId, jid);
+    } catch (err) {
+      console.error('⚠️ [AdvisorService] No se pudo enviar el mensaje de seguimiento al cliente:', err);
+    }
+    return 'notified';
+  }
+
+  // Espera de "número del cliente" tras un "FIN"/"LISTO" (ver handleAdvisorCommand) — clave
+  // `${userId}:${advisorId}`. En memoria a propósito, igual que FlowEngineService.userStates: si
+  // el proceso reinicia justo en el medio, el asesor solo tiene que volver a escribir "FIN".
+  private static pendingFinishByAdvisor = new Set<string>();
+
+  private static async replyToAdvisor(userId: number, advisor: Advisor, text: string): Promise<void> {
+    const { WhatsappService } = await import('./whatsapp.service.js');
+    try {
+      await WhatsappService.sendTextMessage(advisor.phone, text, userId);
+    } catch (err) {
+      console.error(`⚠️ [AdvisorService] No se pudo responder al asesor "${advisor.name}":`, err);
+    }
+  }
+
+  /**
+   * Reconoce cuando quien le escribe al número del bot es un asesor humano (no un cliente) dando
+   * la orden de cerrar una atención — flujo pedido: el asesor escribe "FIN"/"LISTO", el bot le
+   * pregunta el número del cliente que atendió, el asesor responde con ese número, y recién ahí se
+   * libera la reserva + se le pregunta al cliente si quedó resuelta su consulta (ver
+   * finishAdvisory). Se usan palabras clave de TEXTO en vez de botones nativos de WhatsApp a
+   * propósito: Baileys automatiza una cuenta normal (no la API oficial de Business), y ahí los
+   * botones interactivos no son confiables — WhatsApp puede bloquearlos o mostrarlos como texto
+   * plano sin aviso.
+   *
+   * Devuelve true si el mensaje era un comando de asesor y ya quedó atendido acá (whatsapp.
+   * service.ts debe cortar el procesamiento normal ahí); false si no aplica y el mensaje debe
+   * seguir su camino normal (bot/flujo/IA).
+   */
+  static async handleAdvisorCommand(userId: number, phone: string, text: string): Promise<boolean> {
+    const advisor = await AdvisorService.findByPhone(userId, phone);
+    if (!advisor) return false;
+
+    const key = `${userId}:${advisor.id}`;
+    const trimmed = text.trim();
+
+    if (AdvisorService.pendingFinishByAdvisor.has(key)) {
+      AdvisorService.pendingFinishByAdvisor.delete(key);
+      const digits = trimmed.replace(/[^0-9]/g, '');
+      if (digits.length < 8) {
+        await AdvisorService.replyToAdvisor(userId, advisor, 'No reconocí ese número. Escribí FIN de nuevo para intentarlo otra vez.');
+        return true;
+      }
+
+      const { WhatsappService } = await import('./whatsapp.service.js');
+      const clientJid = WhatsappService.phoneToJid(digits);
+      const result = await AdvisorService.finishAdvisory(userId, clientJid, { expectedAdvisorId: advisor.id });
+      const reply =
+        result === 'notified'
+          ? 'Listo ✅ Se liberó la atención y se le preguntó al cliente si quedó resuelta su consulta.'
+          : 'No encontré ninguna atención activa tuya con ese número.';
+      await AdvisorService.replyToAdvisor(userId, advisor, reply);
+      return true;
+    }
+
+    if (/^(fin|listo)$/i.test(trimmed)) {
+      AdvisorService.pendingFinishByAdvisor.add(key);
+      await AdvisorService.replyToAdvisor(userId, advisor, '¿Cuál es el número del cliente que atendiste?');
+      return true;
+    }
+
+    return false;
   }
 }
