@@ -93,6 +93,9 @@ export interface User {
   /** Minutos que dura la reserva de un asesor antes de vencer sola (ver AdvisorService.
    * getReservationMinutes/DEFAULT_HANDOFF_RESERVATION_MINUTES) — configurable por cuenta. */
   handoffReservationMinutes: number;
+  /** Cada cuántos minutos un cliente en la cola de espera (sin asesor todavía) recibe un mensaje
+   * con su posición actual — ver AdvisorQueueService y AdvisorQueueWorker. */
+  queueReminderMinutes: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -121,6 +124,7 @@ function mapUserRow(row: any): User {
     botReplyDelayMaxMs: row.bot_reply_delay_max_ms,
     botMode: row.bot_mode,
     handoffReservationMinutes: row.handoff_reservation_minutes,
+    queueReminderMinutes: row.queue_reminder_minutes,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -224,6 +228,15 @@ export class AuthService {
   static async setHandoffReservationMinutes(id: number, minutes: number): Promise<User | null> {
     const { rows } = await db.query(
       `UPDATE users SET handoff_reservation_minutes = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [minutes, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setQueueReminderMinutes(id: number, minutes: number): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET queue_reminder_minutes = $1, updated_at = now() WHERE id = $2 RETURNING *`,
       [minutes, id]
     );
     if (rows.length === 0) return null;

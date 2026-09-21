@@ -730,10 +730,30 @@ return connectPromise;
     // excepción. Por eso se chequea primero, antes que nada más.
     if (gating.isBlacklisted) return;
 
-    // A propósito, derivar a un asesor (bloque "Contactar Asesor" del flujo, regla legacy, tool de
-    // IA) NO bloquea al bot — sigue respondiendo con normalidad. Ver AdvisorService.
-    // getActiveHandoffAdvisor: solo evita elegir un SEGUNDO asesor para el mismo cliente mientras
-    // el primero todavía tiene 30 minutos para contactarlo.
+    // Relay: si este cliente tiene un asesor en relay activo (el asesor le escribió "FIN" todavía
+    // no — ver AdvisorService.handleAdvisorCommand, que reenvía los mensajes DEL asesor hacia
+    // acá), el mensaje se le pasa tal cual al asesor en vez de a la IA/flujo — mientras dura el
+    // relay, el asesor ES la respuesta (a diferencia de una reserva sin relay activo, que nunca
+    // bloqueó al bot). No aplica a grupos (los asesores atienden charlas 1 a 1). El mensaje ya
+    // quedó grabado en `conversations` arriba, así que el panel lo sigue viendo igual.
+    if (!isGroup) {
+      try {
+        const { AdvisorService } = await import('./advisor.service.js');
+        const activeAdvisor = await AdvisorService.getActiveHandoffAdvisor(userId, botContactJid);
+        if (activeAdvisor) {
+          try {
+            await WhatsappService.sendTextMessage(activeAdvisor.phone, `🧑 *${plainContactName}:* ${text}`, userId);
+          } catch (err) {
+            console.error(`⚠️ [WhatsApp] No se pudo reenviar el mensaje del cliente al asesor "${activeAdvisor.name}":`, err);
+          }
+          const minutes = await AdvisorService.getReservationMinutes(userId);
+          await BotContactService.slideHandoffExpiry(userId, botContactJid, minutes);
+          return;
+        }
+      } catch (err) {
+        console.error('⚠️ [WhatsApp] Error chequeando relay de asesor activo:', err);
+      }
+    }
 
     if (!user?.botEnabled) return;
 

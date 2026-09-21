@@ -112,6 +112,40 @@ export class AdvisorService {
     return rows.length > 0 ? mapRow(rows[0]) : null;
   }
 
+  /**
+   * Como pickNextAdvisor, pero solo entre los que NO tienen ya un cliente en relay activo (ver
+   * botContact.service.ts: handoff_advisor_id/handoff_expires_at sin vencer) — un asesor atiende
+   * UN cliente a la vez (ver comentario de advisor_queue en db.ts). Si hay más de uno libre,
+   * prioriza al que lleva MÁS TIEMPO desocupado (freed_at ASC NULLS FIRST) antes que la equidad
+   * por cantidad de derivaciones — a pedido explícito del usuario. Null = todos ocupados (o
+   * ninguno activo) → AdvisorService.handoffConversation lo manda a la cola.
+   */
+  static async pickFreeAdvisor(userId: number): Promise<Advisor | null> {
+    const { rows } = await db.query(
+      `UPDATE advisors SET handoff_count = handoff_count + 1, last_handoff_at = now()
+       WHERE id = (
+         SELECT a.id FROM advisors a
+         WHERE a.user_id = $1 AND a.is_active = true
+           AND NOT EXISTS (
+             SELECT 1 FROM bot_contacts bc
+             WHERE bc.handoff_advisor_id = a.id AND bc.handoff_expires_at > now()
+           )
+         ORDER BY a.freed_at ASC NULLS FIRST, a.handoff_count ASC, a.last_handoff_at ASC NULLS FIRST, a.id ASC
+         LIMIT 1
+         FOR UPDATE SKIP LOCKED
+       )
+       RETURNING *`,
+      [userId]
+    );
+    return rows.length > 0 ? mapRow(rows[0]) : null;
+  }
+
+  /** Marca a este asesor como recién liberado — se llama al cerrar un relay (ver finishAdvisory),
+   * para que pickFreeAdvisor sepa a quién priorizar la próxima vez que haya más de uno libre. */
+  static async markFreed(id: number): Promise<void> {
+    await db.query('UPDATE advisors SET freed_at = now() WHERE id = $1', [id]);
+  }
+
   /** Registra una derivación a un asesor elegido a mano (modo "fijo" del flujo) — pickNextAdvisor
    * ya cuenta la suya propia atómicamente, así que esto NO se llama después de esa. */
   static async recordHandoff(id: number): Promise<Advisor | null> {
@@ -155,20 +189,28 @@ export class AdvisorService {
   }
 
   /**
-   * Deriva esta conversación a un asesor humano (Issue #30 [BE-049], punto 2 y 3): elige al
-   * siguiente por round-robin, genera un resumen breve con IA (modo 'utility', sin tools ni
-   * Base de Conocimiento — es una tarea de redacción, no una respuesta al cliente) y le manda al
-   * asesor un WhatsApp con los datos del cliente + ese resumen. Usada tanto por la regla legacy
-   * CALL_AI/HANDOFF (botEngine.service.ts) como por la tool de function-calling
-   * handoff_to_advisor (ai.service.ts) — a diferencia del bloque "Contactar Asesor" del editor de
-   * flujos (ver HandoffService), que tiene su propia plantilla configurable y NO pasa por acá.
+   * Deriva esta conversación a un asesor humano (Issue #30 [BE-049], punto 2 y 3): elige entre los
+   * LIBRES por round-robin (pickFreeAdvisor — un asesor atiende un cliente en relay a la vez),
+   * genera un resumen breve con IA (modo 'utility', sin tools ni Base de Conocimiento — es una
+   * tarea de redacción, no una respuesta al cliente) y le manda al asesor un WhatsApp con los
+   * datos del cliente + ese resumen. Usada tanto por la regla legacy CALL_AI/HANDOFF
+   * (botEngine.service.ts) como por la tool de function-calling handoff_to_advisor (ai.service.ts)
+   * — a diferencia del bloque "Contactar Asesor" del editor de flujos (ver HandoffService), que
+   * tiene su propia plantilla configurable y sigue usando pickNextAdvisor (sin cola) por ahora.
    *
-   * Antes de elegir uno nuevo, chequea getActiveHandoffAdvisor: si el cliente ya está en fila con
-   * alguien, devuelve status 'already_pending' con ESE mismo asesor en vez de derivar a otro.
+   * Si no hay ningún asesor libre (todos ocupados en relay con otro cliente) pero SÍ hay al menos
+   * uno activo, encola al cliente (AdvisorQueueService) en vez de fallar — status 'queued'. Si
+   * directamente no hay ningún asesor activo configurado, sigue devolviendo 'no_advisor' (encolar
+   * ahí no serviría de nada, nadie lo va a levantar nunca).
    *
-   * Importa AIService/WhatsappService de forma dinámica (no en el import estático de arriba) para
-   * no crear un ciclo: whatsapp.service.ts -> handoff.service.ts -> advisor.service.ts ya existe,
-   * así que este archivo no puede importar whatsapp.service.ts de entrada sin cerrar ese ciclo.
+   * Antes de elegir, chequea en este orden: 1) getActiveHandoffAdvisor — ¿ya está en relay con
+   * alguien? → 'already_pending'; 2) AdvisorQueueService.getPosition — ¿ya está en la cola? →
+   * 'already_queued' con su posición actual (no se lo vuelve a encolar ni se le cambia el lugar).
+   *
+   * Importa AIService/WhatsappService/AdvisorQueueService de forma dinámica (no en el import
+   * estático de arriba) para no crear un ciclo: whatsapp.service.ts -> handoff.service.ts ->
+   * advisor.service.ts ya existe, así que este archivo no puede importar whatsapp.service.ts de
+   * entrada sin cerrar ese ciclo.
    */
   static async handoffConversation(
     userId: number,
@@ -178,15 +220,31 @@ export class AdvisorService {
   ): Promise<
     | { status: 'handed_off'; advisor: Advisor; summary: string }
     | { status: 'already_pending'; advisor: Advisor }
+    | { status: 'already_queued'; position: number }
+    | { status: 'queued'; position: number }
     | { status: 'no_advisor' }
   > {
     const { WhatsappService } = await import('./whatsapp.service.js');
+    const { AdvisorQueueService } = await import('./advisorQueue.service.js');
     const jid = WhatsappService.phoneToJid(customerPhone);
+
     const existing = await AdvisorService.getActiveHandoffAdvisor(userId, jid);
     if (existing) return { status: 'already_pending', advisor: existing };
 
-    const advisor = await AdvisorService.pickNextAdvisor(userId);
-    if (!advisor) return { status: 'no_advisor' };
+    const queuedPosition = await AdvisorQueueService.getPosition(userId, jid);
+    if (queuedPosition !== null) return { status: 'already_queued', position: queuedPosition };
+
+    const advisor = await AdvisorService.pickFreeAdvisor(userId);
+    if (!advisor) {
+      const { rows: activeCountRows } = await db.query(
+        'SELECT COUNT(*)::int AS count FROM advisors WHERE user_id = $1 AND is_active = true',
+        [userId]
+      );
+      if (activeCountRows[0].count === 0) return { status: 'no_advisor' };
+
+      const position = await AdvisorQueueService.enqueue(userId, jid, customerName);
+      return { status: 'queued', position };
+    }
 
     let summary = 'El cliente necesita atención — no se pudo generar un resumen automático.';
     try {
@@ -209,7 +267,7 @@ export class AdvisorService {
       '🔔 *Derivación Automática*',
       `📱 Cliente: ${customerName} (${customerPhone})`,
       `📋 Resumen: ${summary}`,
-      '💬 Respondé a este número para continuar la atención.',
+      '💬 Escribile por acá mismo y se lo reenvío — cuando termines, escribí FIN.',
     ].join('\n');
 
     try {
@@ -219,6 +277,46 @@ export class AdvisorService {
     }
 
     return { status: 'handed_off', advisor, summary };
+  }
+
+  /**
+   * Conecta al siguiente cliente de la cola con este asesor, que se acaba de liberar — reserva
+   * (BotContactService.reserveHandoffAdvisor) y manda el mensaje de apertura a ambos lados. A
+   * diferencia de handoffConversation, NO genera resumen con IA (para no demorar la promoción): el
+   * cliente ya le puede contar directo al asesor por el relay. No hace nada si la cola está vacía.
+   * Se llama desde finishAdvisory (cierre explícito) y desde AdvisorQueueWorker (sweep periódico,
+   * por si el relay anterior se cerró solo por inactividad sin que nadie escriba "FIN").
+   */
+  static async promoteNextFromQueue(userId: number, advisor: Advisor): Promise<void> {
+    const { AdvisorQueueService } = await import('./advisorQueue.service.js');
+    const { BotContactService } = await import('./botContact.service.js');
+    const { WhatsappService } = await import('./whatsapp.service.js');
+
+    const next = await AdvisorQueueService.dequeueFirst(userId);
+    if (!next) return;
+
+    const minutes = await AdvisorService.getReservationMinutes(userId);
+    await BotContactService.reserveHandoffAdvisor(userId, next.jid, advisor.id, minutes);
+
+    const phone = next.jid.split('@')[0];
+    try {
+      await WhatsappService.sendTextMessage(
+        advisor.phone,
+        [
+          '🔔 *Se te asignó un cliente que estaba en la cola*',
+          `📱 Cliente: ${next.customerName} (${phone})`,
+          '💬 Escribile por acá mismo y se lo reenvío — cuando termines, escribí FIN.',
+        ].join('\n'),
+        userId
+      );
+    } catch (err) {
+      console.error(`⚠️ [AdvisorService] No se pudo notificar al asesor "${advisor.name}" sobre la promoción de cola:`, err);
+    }
+    try {
+      await WhatsappService.sendTextMessage(phone, `Ya te podés comunicar con ${advisor.name}, nuestro asesor — escribile por acá mismo.`, userId);
+    } catch (err) {
+      console.error('⚠️ [AdvisorService] No se pudo avisarle al cliente que ya tiene asesor:', err);
+    }
   }
 
   /** Le manda al CLIENTE el mensaje de seguimiento después de que se cierra la atención humana —
@@ -262,13 +360,20 @@ export class AdvisorService {
     } catch (err) {
       console.error('⚠️ [AdvisorService] No se pudo enviar el mensaje de seguimiento al cliente:', err);
     }
+
+    // Se acaba de liberar un cupo — si hay alguien esperando en la cola, se le asigna a ESTE
+    // asesor antes que a cualquiera (así el próximo handoffConversation no se lo lleva primero).
+    if (reservation.advisorId) {
+      await AdvisorService.markFreed(reservation.advisorId);
+      try {
+        const advisor = await AdvisorService.getById(userId, reservation.advisorId);
+        if (advisor) await AdvisorService.promoteNextFromQueue(userId, advisor);
+      } catch (err) {
+        console.error('⚠️ [AdvisorService] Error promoviendo el siguiente de la cola:', err);
+      }
+    }
     return 'notified';
   }
-
-  // Espera de "número del cliente" tras un "FIN"/"LISTO" (ver handleAdvisorCommand) — clave
-  // `${userId}:${advisorId}`. En memoria a propósito, igual que FlowEngineService.userStates: si
-  // el proceso reinicia justo en el medio, el asesor solo tiene que volver a escribir "FIN".
-  private static pendingFinishByAdvisor = new Set<string>();
 
   private static async replyToAdvisor(userId: number, advisor: Advisor, text: string): Promise<void> {
     const { WhatsappService } = await import('./whatsapp.service.js');
@@ -280,51 +385,51 @@ export class AdvisorService {
   }
 
   /**
-   * Reconoce cuando quien le escribe al número del bot es un asesor humano (no un cliente) dando
-   * la orden de cerrar una atención — flujo pedido: el asesor escribe "FIN"/"LISTO", el bot le
-   * pregunta el número del cliente que atendió, el asesor responde con ese número, y recién ahí se
-   * libera la reserva + se le pregunta al cliente si quedó resuelta su consulta (ver
-   * finishAdvisory). Se usan palabras clave de TEXTO en vez de botones nativos de WhatsApp a
-   * propósito: Baileys automatiza una cuenta normal (no la API oficial de Business), y ahí los
-   * botones interactivos no son confiables — WhatsApp puede bloquearlos o mostrarlos como texto
-   * plano sin aviso.
+   * Reconoce cuando quien le escribe al número del bot es un asesor humano (no un cliente) —
+   * relay bidireccional: mientras el asesor tiene un cliente en relay activo (ver
+   * BotContactService.getActiveClientForAdvisor — un asesor atiende UNO a la vez), cualquier
+   * mensaje normal se le reenvía tal cual a ESE cliente, rotulado con el nombre del asesor, y la
+   * reserva se corre hacia adelante (sliding timeout, ver slideHandoffExpiry). Si en cambio
+   * escribe "FIN"/"LISTO", se cierra esa atención (finishAdvisory) — como ya sabemos con CUÁL
+   * cliente está (uno solo a la vez), no hace falta preguntarle el número como antes.
    *
-   * Devuelve true si el mensaje era un comando de asesor y ya quedó atendido acá (whatsapp.
-   * service.ts debe cortar el procesamiento normal ahí); false si no aplica y el mensaje debe
-   * seguir su camino normal (bot/flujo/IA).
+   * Se usan palabras clave de TEXTO en vez de botones nativos de WhatsApp a propósito: Baileys
+   * automatiza una cuenta normal (no la API oficial de Business), y ahí los botones interactivos
+   * no son confiables — WhatsApp puede bloquearlos o mostrarlos como texto plano sin aviso.
+   *
+   * Devuelve true si el mensaje era del asesor y ya quedó atendido acá (whatsapp.service.ts debe
+   * cortar el procesamiento normal ahí); false si no aplica (no es un asesor, o es un asesor sin
+   * cliente activo escribiendo otra cosa) y el mensaje debe seguir su camino normal.
    */
   static async handleAdvisorCommand(userId: number, phone: string, text: string): Promise<boolean> {
     const advisor = await AdvisorService.findByPhone(userId, phone);
     if (!advisor) return false;
 
-    const key = `${userId}:${advisor.id}`;
+    const { BotContactService } = await import('./botContact.service.js');
+    const activeClientJid = await BotContactService.getActiveClientForAdvisor(userId, advisor.id);
+    if (!activeClientJid) return false;
+
     const trimmed = text.trim();
-
-    if (AdvisorService.pendingFinishByAdvisor.has(key)) {
-      AdvisorService.pendingFinishByAdvisor.delete(key);
-      const digits = trimmed.replace(/[^0-9]/g, '');
-      if (digits.length < 8) {
-        await AdvisorService.replyToAdvisor(userId, advisor, 'No reconocí ese número. Escribí FIN de nuevo para intentarlo otra vez.');
-        return true;
-      }
-
-      const { WhatsappService } = await import('./whatsapp.service.js');
-      const clientJid = WhatsappService.phoneToJid(digits);
-      const result = await AdvisorService.finishAdvisory(userId, clientJid, { expectedAdvisorId: advisor.id });
+    if (/^(fin|listo)$/i.test(trimmed)) {
+      const result = await AdvisorService.finishAdvisory(userId, activeClientJid, { expectedAdvisorId: advisor.id });
       const reply =
         result === 'notified'
           ? 'Listo ✅ Se liberó la atención y se le preguntó al cliente si quedó resuelta su consulta.'
-          : 'No encontré ninguna atención activa tuya con ese número.';
+          : 'No encontré ninguna atención activa tuya en este momento.';
       await AdvisorService.replyToAdvisor(userId, advisor, reply);
       return true;
     }
 
-    if (/^(fin|listo)$/i.test(trimmed)) {
-      AdvisorService.pendingFinishByAdvisor.add(key);
-      await AdvisorService.replyToAdvisor(userId, advisor, '¿Cuál es el número del cliente que atendiste?');
-      return true;
+    // Relay: se le reenvía tal cual al cliente, rotulado — ninguno de los dos ve el número real
+    // del otro. Se corre la reserva hacia adelante para que no venza en medio de una charla activa.
+    const { WhatsappService } = await import('./whatsapp.service.js');
+    const minutes = await AdvisorService.getReservationMinutes(userId);
+    try {
+      await WhatsappService.sendTextMessage(activeClientJid.split('@')[0], `👨‍💼 *${advisor.name}:* ${text}`, userId);
+    } catch (err) {
+      console.error(`⚠️ [AdvisorService] No se pudo reenviar el mensaje del asesor "${advisor.name}" al cliente:`, err);
     }
-
-    return false;
+    await BotContactService.slideHandoffExpiry(userId, activeClientJid, minutes);
+    return true;
   }
 }

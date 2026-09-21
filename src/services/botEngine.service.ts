@@ -124,6 +124,13 @@ export class BotEngineService {
                 // avisarle que sigue en fila (ver AdvisorService.getActiveHandoffAdvisor).
                 resolvedAdvisor = result.advisor;
                 text = `Ya te había comunicado con ${result.advisor.name}, nuestro asesor — en breve te responde. Si necesitás algo más mientras tanto, contame.`;
+              } else if (result.status === 'queued') {
+                // Todos los asesores ocupados en relay con otro cliente — a la cola (ver
+                // AdvisorService.pickFreeAdvisor). No hay `resolvedAdvisor` porque todavía no hay
+                // asesor asignado, así que este mensaje sale como KEYWORD_RULE normal.
+                text = `Ahora mismo todos nuestros asesores están ocupados — quedaste en la fila, en la posición ${result.position}. En cuanto se libere alguien te conectamos.`;
+              } else if (result.status === 'already_queued') {
+                text = `Seguís en la fila de espera de un asesor, en la posición ${result.position}.`;
               }
             } catch (err) {
               console.error('❌ [BOT ENGINE] Error derivando a un asesor (regla HANDOFF):', err);
