@@ -273,14 +273,26 @@ export class BotContactService {
   }
 
   /** Alta manual desde el panel (número que todavía no le escribió al bot). */
-  static async addManual(userId: number, jid: string, name: string, enabled: boolean): Promise<BotContact> {
+  static async addManual(
+    userId: number,
+    jid: string,
+    name: string,
+    enabled: boolean,
+    // La importación masiva pasa true: subir un contacto que ya estaba en la Blacklist como
+    // "activo" tiene que sacarlo de ahí — antes solo se actualizaba bot_enabled y is_blacklisted
+    // quedaba en true, así que el contacto seguía bloqueado (y visible en la Blacklist) aunque el
+    // archivo lo marcara como activo. El alta manual normal no lo usa (no cambia su comportamiento).
+    clearBlacklist: boolean = false
+  ): Promise<BotContact> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';
     const { rows } = await db.query(
       `INSERT INTO bot_contacts (user_id, owner_jid, jid, name, is_group, bot_enabled)
        VALUES ($1, $2, $3, $4, false, $5)
-       ON CONFLICT (user_id, owner_jid, jid) DO UPDATE SET bot_enabled = EXCLUDED.bot_enabled
+       ON CONFLICT (user_id, owner_jid, jid) DO UPDATE SET
+         bot_enabled = EXCLUDED.bot_enabled,
+         is_blacklisted = CASE WHEN $6 THEN false ELSE bot_contacts.is_blacklisted END
        RETURNING *`,
-      [userId, ownerJid, jid, name, enabled]
+      [userId, ownerJid, jid, name, enabled, clearBlacklist]
     );
     return mapRow(rows[0]);
   }
@@ -326,7 +338,7 @@ export class BotContactService {
           await this.addToBlacklist(userId, jid, name);
           blacklisted++;
         } else {
-          await this.addManual(userId, jid, name, row.enabled);
+          await this.addManual(userId, jid, name, row.enabled, true);
         }
         if (wasExisting) {
           updated++;
