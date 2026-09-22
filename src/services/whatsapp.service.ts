@@ -1,4 +1,4 @@
-import { makeWASocket, DisconnectReason, downloadMediaMessage, type WASocket } from '@whiskeysockets/baileys';
+import { makeWASocket, makeCacheableSignalKeyStore, DisconnectReason, downloadMediaMessage, proto, type WASocket } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode';
 import { io } from '../server.js';
 import { db } from '../config/db.js';
@@ -35,6 +35,28 @@ const sessions = new Map<number, WhatsappSession>();
 // con tope de tamaño para no crecer indefinidamente en una sesión larga.
 const seenMessageIds = new Set<string>();
 const MAX_SEEN_MESSAGE_IDS = 2000;
+
+// Contenido de los mensajes recientes (enviados y recibidos), para responder a los pedidos de
+// reenvío de WhatsApp — ver getMessage en makeWASocket. Cuando el teléfono del otro lado no puede
+// descifrar un mensaje nuestro, en vez de mostrarlo pide que se lo reenviemos re-cifrado; Baileys
+// llama a getMessage para obtener el original. Sin esto (el default de Baileys devuelve
+// undefined), el reenvío nunca sale y el otro lado se queda para siempre en "Esperando mensaje.
+// Esto puede tomar tiempo" — confirmado en producción: el relay asesor↔cliente andaba unos
+// minutos y después cada mensaje que necesitaba un reintento se perdía. En memoria por proceso
+// con tope: los reintentos llegan en segundos/minutos, no hace falta persistirlo.
+const recentMessageContent = new Map<string, proto.IMessage>();
+const MAX_RECENT_MESSAGES = 5000;
+
+function rememberMessageContent(userId: number, msgId: string | null | undefined, content: proto.IMessage | null | undefined) {
+  if (!msgId || !content) return;
+  const key = `${userId}:${msgId}`;
+  recentMessageContent.delete(key);
+  recentMessageContent.set(key, content);
+  if (recentMessageContent.size > MAX_RECENT_MESSAGES) {
+    const oldest = recentMessageContent.keys().next().value;
+    if (oldest !== undefined) recentMessageContent.delete(oldest);
+  }
+}
 
 function isDuplicateMessage(userId: number, msgId: string | null | undefined): boolean {
   if (!msgId) return false;
@@ -482,9 +504,13 @@ export class WhatsappService {
       try {
         const { state, saveCreds, clearCreds } = await usePostgresAuthState(userId);
         const socket = makeWASocket({
-          auth: state,
+          // Cache en memoria delante de las llaves Signal de Postgres (patrón recomendado por
+          // Baileys): cada mensaje lee/escribe varias llaves de sesión, y sin cache cada una era un
+          // round-trip a la base — lento bajo carga y más expuesto a leer un estado de sesión viejo.
+          auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys) },
           printQRInTerminal: false,
-          defaultQueryTimeoutMs: 90000
+          defaultQueryTimeoutMs: 90000,
+          getMessage: async (key) => (key.id ? recentMessageContent.get(`${userId}:${key.id}`) : undefined)
         });
 
         const session: WhatsappSession = { socket, status: 'connecting', qrDataUrl: null };
@@ -631,9 +657,20 @@ export class WhatsappService {
     });
 
     socket.ev.on('messages.upsert', async ({ messages, type }) => {
+      // Se guarda el contenido de TODO lo que pasa por acá (incluye los mensajes que manda el
+      // propio bot, que Baileys emite con type 'append') para poder reenviarlo si el otro lado
+      // pide un reintento — ver recentMessageContent/getMessage.
+      for (const msg of messages) rememberMessageContent(userId, msg.key?.id, msg.message);
+
       if (type !== 'notify') return;
 
       for (const msg of messages) {
+        // Un mensaje que no se pudo descifrar llega primero como "stub" CIPHERTEXT, sin contenido,
+        // mientras Baileys le pide al remitente que lo reenvíe. NO se marca como visto: cuando el
+        // reenvío llega bien descifrado trae el MISMO id, y antes isDuplicateMessage lo descartaba
+        // como duplicado ("Mensaje duplicado ignorado" en los logs) — el mensaje real se perdía.
+        if (!msg.message || msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT) continue;
+
         if (isDuplicateMessage(userId, msg.key?.id)) {
           console.warn(`⚠️ [WhatsApp] Mensaje duplicado ignorado (id=${msg.key?.id}), usuario ${userId}.`);
           continue;
