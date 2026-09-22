@@ -428,6 +428,27 @@ export class AdvisorService {
     return 'notified';
   }
 
+  /**
+   * Libera al cliente que este asesor tiene asignado ahora mismo — para el botón "Liberar" del
+   * listado de Asesores humanos del panel (GET /advisors ya expone `activeClient` por fila), donde
+   * solo se conoce el asesor, no el jid del cliente. A diferencia de finishAdvisory (que ya recibe
+   * el jid armado desde el chat activo o el comando "FIN" por WhatsApp), acá primero hay que
+   * resolverlo con BotContactService.getActiveClientForAdvisor. Mismo efecto que esos otros dos
+   * caminos: libera la reserva, le pregunta al cliente si quedó resuelto, y promueve a quien siga
+   * en la cola de este asesor.
+   */
+  static async releaseByAdvisorId(userId: number, advisorId: number): Promise<'notified' | 'no_active_reservation'> {
+    const { BotContactService } = await import('./botContact.service.js');
+    const activeClient = await BotContactService.getActiveClientForAdvisor(userId, advisorId);
+    if (!activeClient) return 'no_active_reservation';
+    const result = await AdvisorService.finishAdvisory(userId, activeClient.jid, { expectedAdvisorId: advisorId });
+    // 'mismatch' no debería pasar acá (expectedAdvisorId es justo el asesor que activeClient ya
+    // confirmó que tiene la reserva), pero por las dudas se lo trata como "ya no hay nada que
+    // liberar" en vez de un error — evita un estado inconsistente si la reserva venció/cambió
+    // entre el getActiveClientForAdvisor de arriba y el finishAdvisory de acá.
+    return result === 'mismatch' ? 'no_active_reservation' : result;
+  }
+
   private static async replyToAdvisor(userId: number, advisor: Advisor, text: string): Promise<void> {
     const { WhatsappService } = await import('./whatsapp.service.js');
     try {
@@ -459,13 +480,14 @@ export class AdvisorService {
     if (!advisor) return false;
 
     const { BotContactService } = await import('./botContact.service.js');
-    const activeClientJid = await BotContactService.getActiveClientForAdvisor(userId, advisor.id);
-    if (!activeClientJid) {
+    const activeClient = await BotContactService.getActiveClientForAdvisor(userId, advisor.id);
+    if (!activeClient) {
       // El que escribe ES un asesor, pero no tiene cliente asignado ahora: el mensaje sigue el
       // camino normal (el bot le contesta como a cualquier contacto) y NO se reenvía a nadie.
       trace('ASESOR_SIN_CLIENTE_ACTIVO', { usuario: userId, asesor: advisor.name, asesorTel: phone, texto: preview(text) });
       return false;
     }
+    const activeClientJid = activeClient.jid;
     trace('ASESOR_RECONOCIDO', { usuario: userId, asesor: advisor.name, asesorTel: phone, cliente: activeClientJid });
 
     const trimmed = text.trim();
