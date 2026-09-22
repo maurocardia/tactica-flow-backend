@@ -259,6 +259,23 @@ export class AdvisorService {
       return { status: 'queued', position };
     }
 
+    // Reservar ACÁ, antes de generar el resumen y notificar al asesor — no después. El llamador
+    // (whatsapp.service.ts) recién llama a HandoffService.execute (que es quien reserva vía
+    // ctx.resolvedAdvisor) DESPUÉS de aplicar el delay humanizado y mandarle la respuesta al
+    // cliente, varios segundos después de que el asesor ya recibió el WhatsApp "Escribile por acá
+    // mismo". Si el asesor contestaba rápido, esa primera respuesta llegaba ANTES de que existiera
+    // la reserva: getActiveClientForAdvisor no encontraba nada, handleAdvisorCommand devolvía
+    // false, y el mensaje cortaba por el pipeline normal (el bot le respondía a él como si fuera
+    // un cliente) en vez de reenviarse — confirmado en logs/capturas: el primer mensaje del
+    // asesor se perdía y recién el segundo (ya con la reserva escrita) se reenviaba bien.
+    const reservationMinutes = await AdvisorService.getReservationMinutes(userId);
+    try {
+      const { BotContactService } = await import('./botContact.service.js');
+      await BotContactService.reserveHandoffAdvisor(userId, jid, advisor.id, reservationMinutes);
+    } catch (err) {
+      console.error('❌ [AdvisorService] Error reservando el asesor antes de notificarlo:', err);
+    }
+
     let summary = 'El cliente necesita atención — no se pudo generar un resumen automático.';
     try {
       const { AIService } = await import('./ai.service.js');
