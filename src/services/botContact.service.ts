@@ -197,11 +197,11 @@ export class BotContactService {
   }
 
   /**
-   * Reserva este asesor para esta conversación por 30 minutos fijos (ver AdvisorService.
-   * HANDOFF_RESERVATION_MINUTES) — NO afecta si el bot responde o no, solo evita que otro camino
-   * de derivación le asigne un SEGUNDO asesor al mismo cliente mientras el primero todavía tiene
-   * tiempo de contactarlo. Pasados los 30 minutos, la reserva vence sola (no hace falta limpiarla
-   * a mano) y un nuevo pedido de asesor puede volver a asignar.
+   * Reserva este asesor para esta conversación por `minutes` minutos (configurable por cuenta,
+   * ver AdvisorService.getReservationMinutes) — NO afecta si el bot responde o no, solo evita que
+   * otro camino de derivación le asigne un SEGUNDO asesor al mismo cliente mientras el primero
+   * todavía tiene tiempo de contactarlo. Pasado ese tiempo, la reserva vence sola (no hace falta
+   * limpiarla a mano) y un nuevo pedido de asesor puede volver a asignar.
    */
   static async reserveHandoffAdvisor(userId: number, jid: string, advisorId: number | null, minutes: number): Promise<void> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';

@@ -124,9 +124,19 @@ export class AdvisorService {
 
   // El bot NUNCA deja de responder por una derivación a asesor (a pedido explícito del usuario) —
   // esto solo evita asignarle un SEGUNDO asesor al mismo cliente mientras el primero todavía tiene
-  // tiempo de contactarlo. Pasados estos minutos sin que se libere a mano (panel/FINISH_FLOW), la
-  // reserva vence sola y un nuevo pedido de asesor puede volver a asignar a cualquiera.
-  static readonly HANDOFF_RESERVATION_MINUTES = 30;
+  // tiempo de contactarlo. Pasados estos minutos sin que se libere a mano (panel/FINISH_FLOW/comando
+  // "FIN" por WhatsApp), la reserva vence sola y un nuevo pedido de asesor puede volver a asignar a
+  // cualquiera. Configurable por cuenta (users.handoff_reservation_minutes, ver Configuración del
+  // panel) — esto es solo el valor por default cuando esa columna es NULL.
+  static readonly DEFAULT_HANDOFF_RESERVATION_MINUTES = 30;
+
+  /** Cuántos minutos dura la reserva de asesor para ESTE usuario — ver
+   * setHandoffReservationMinutes en AuthService y el default de arriba. */
+  static async getReservationMinutes(userId: number): Promise<number> {
+    const { AuthService } = await import('./auth.service.js');
+    const user = await AuthService.getUserById(userId);
+    return user?.handoffReservationMinutes ?? AdvisorService.DEFAULT_HANDOFF_RESERVATION_MINUTES;
+  }
 
   /**
    * Si esta conversación YA tiene un asesor reservado y esa reserva todavía no venció

@@ -7,9 +7,9 @@ import { FlowHandoffRequest } from '../types/flow.js';
 // Ejecuta el bloque "Contactar Asesor" del editor visual de flujos: elige un asesor real (ver
 // AdvisorService.pickNextAdvisor/getById) y lo notifica por WhatsApp desde la misma línea de la
 // empresa. A propósito NO pausa al bot — el bot sigue respondiendo con total normalidad después
-// de derivar; solo se reserva ese asesor por 30 minutos (ver AdvisorService.
-// HANDOFF_RESERVATION_MINUTES) para no terminar derivando al mismo cliente a una segunda persona
-// si vuelve a pedir un asesor antes de que el primero lo contacte.
+// de derivar; solo se reserva ese asesor por los minutos configurados en la cuenta (ver
+// AdvisorService.getReservationMinutes) para no terminar derivando al mismo cliente a una segunda
+// persona si vuelve a pedir un asesor antes de que el primero lo contacte.
 //
 // Vive separado de FlowEngineService/BotEngineService a propósito: esos servicios solo devuelven
 // el INTENT de derivar (FlowHandoffRequest), sin resolver nada — la resolución necesita el
@@ -63,11 +63,15 @@ const DEFAULT_NOTIFY_TEMPLATE = [
 
 export class HandoffService {
   static async execute(ctx: HandoffContext): Promise<HandoffResult> {
+    // Minutos configurados por esta cuenta para la reserva (ver AdvisorService.
+    // getReservationMinutes) — se resuelve una sola vez acá porque los 3 caminos de abajo la usan.
+    const reservationMinutes = await AdvisorService.getReservationMinutes(ctx.userId);
+
     // Derivación ya resuelta afuera (regla legacy HANDOFF / tool de IA, ver AdvisorService.
     // handoffConversation) — solo falta reservar ese asesor para esta conversación puntual.
     if (ctx.resolvedAdvisor) {
       try {
-        await BotContactService.reserveHandoffAdvisor(ctx.userId, ctx.botContactJid, ctx.resolvedAdvisor.id, AdvisorService.HANDOFF_RESERVATION_MINUTES);
+        await BotContactService.reserveHandoffAdvisor(ctx.userId, ctx.botContactJid, ctx.resolvedAdvisor.id, reservationMinutes);
       } catch (err) {
         console.error('❌ [HandoffService] Error reservando el asesor para esta conversación:', err);
       }
@@ -81,7 +85,7 @@ export class HandoffService {
       const existing = await AdvisorService.getActiveHandoffAdvisor(ctx.userId, ctx.botContactJid);
       if (existing) {
         try {
-          await BotContactService.reserveHandoffAdvisor(ctx.userId, ctx.botContactJid, existing.id, AdvisorService.HANDOFF_RESERVATION_MINUTES);
+          await BotContactService.reserveHandoffAdvisor(ctx.userId, ctx.botContactJid, existing.id, reservationMinutes);
         } catch (err) {
           console.error('❌ [HandoffService] Error extendiendo la reserva del asesor:', err);
         }
@@ -145,7 +149,7 @@ export class HandoffService {
     }
 
     try {
-      await BotContactService.reserveHandoffAdvisor(ctx.userId, ctx.botContactJid, advisor.id, AdvisorService.HANDOFF_RESERVATION_MINUTES);
+      await BotContactService.reserveHandoffAdvisor(ctx.userId, ctx.botContactJid, advisor.id, reservationMinutes);
     } catch (err) {
       console.error('❌ [HandoffService] Error reservando el asesor para esta conversación:', err);
     }

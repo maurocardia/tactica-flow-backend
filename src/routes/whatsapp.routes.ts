@@ -252,6 +252,31 @@ router.put('/bot-reply-delay', async (req: Request, res: Response) => {
   }
 });
 
+// Minutos que dura la reserva de un asesor antes de vencer sola (ver AdvisorService.
+// getReservationMinutes/DEFAULT_HANDOFF_RESERVATION_MINUTES) — configurable por cuenta.
+const HANDOFF_RESERVATION_MINUTES_MIN = 1;
+const HANDOFF_RESERVATION_MINUTES_MAX = 1440; // 24 horas: un límite más alto no tiene sentido práctico
+router.put('/handoff-reservation-minutes', async (req: Request, res: Response) => {
+  const { minutes } = req.body;
+  if (
+    typeof minutes !== 'number' ||
+    !Number.isInteger(minutes) ||
+    minutes < HANDOFF_RESERVATION_MINUTES_MIN ||
+    minutes > HANDOFF_RESERVATION_MINUTES_MAX
+  ) {
+    return res.status(400).json({
+      error: `El campo "minutes" debe ser un entero entre ${HANDOFF_RESERVATION_MINUTES_MIN} y ${HANDOFF_RESERVATION_MINUTES_MAX}`
+    });
+  }
+
+  try {
+    const user = await AuthService.setHandoffReservationMinutes(req.user!.id, minutes);
+    res.json({ handoffReservationMinutes: user?.handoffReservationMinutes ?? minutes });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar la duración de la reserva de asesor' });
+  }
+});
+
 // Modo de respuesta del bot (Híbrido/Solo IA/Solo Flujos) — ver ChatbotModule.tsx y
 // BotEngineService.processIncomingMessage.
 const VALID_BOT_MODES: BotMode[] = ['flow_only', 'ai_only', 'hybrid'];
