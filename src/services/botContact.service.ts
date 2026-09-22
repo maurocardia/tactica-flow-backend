@@ -279,6 +279,36 @@ export class BotContactService {
     };
   }
 
+  /** El jid del cliente con el que ESTE asesor está en relay activo ahora mismo (ver
+   * AdvisorService.handleAdvisorCommand) — un asesor atiende un cliente a la vez, así que alcanza
+   * con la fila más reciente sin vencer. Normalmente hay a lo sumo una; si el bloque "Contactar
+   * Asesor" del editor de flujos (modo fijo, no pasa por pickFreeAdvisor) llegó a reservarle un
+   * segundo cliente al mismo asesor, se toma la más nueva por prolijidad. */
+  static async getActiveClientForAdvisor(userId: number, advisorId: number): Promise<string | null> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query(
+      `SELECT jid FROM bot_contacts
+       WHERE user_id = $1 AND owner_jid = $2 AND handoff_advisor_id = $3 AND handoff_expires_at > now()
+       ORDER BY handoff_started_at DESC LIMIT 1`,
+      [userId, ownerJid, advisorId]
+    );
+    return rows.length > 0 ? rows[0].jid : null;
+  }
+
+  /** Corre hacia adelante el vencimiento de la reserva sin tocar handoff_advisor_id/
+   * handoff_started_at — usado en cada mensaje relayado (de cualquiera de los dos lados) para que
+   * el relay no se corte mientras hay actividad real (sliding timeout, ver comentario de
+   * advisor_queue en db.ts). Si ya venció o no había reserva, no hace nada (no "resucita" una
+   * reserva muerta por accidente). */
+  static async slideHandoffExpiry(userId: number, jid: string, minutes: number): Promise<void> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    await db.query(
+      `UPDATE bot_contacts SET handoff_expires_at = now() + ($1 || ' minutes')::interval
+       WHERE user_id = $2 AND owner_jid = $3 AND jid = $4 AND handoff_expires_at > now()`,
+      [minutes, userId, ownerJid, jid]
+    );
+  }
+
   /** Borra un contacto/grupo puntual de la lista — botón "X" del panel. Solo afecta bot_contacts. */
   static async delete(userId: number, id: number): Promise<boolean> {
     const { rowCount } = await db.query('DELETE FROM bot_contacts WHERE id = $1 AND user_id = $2', [id, userId]);

@@ -313,7 +313,7 @@ function buildHandoffTool(
   customerName: string,
   conversationHistory: SimpleMessage[],
   userMessage: string,
-  outcome: { advisor?: Advisor; alreadyPending?: boolean }
+  outcome: { advisor?: Advisor; alreadyPending?: boolean; queuePosition?: number; alreadyQueued?: boolean }
 ) {
   return {
     handoff_to_advisor: tool({
@@ -330,6 +330,18 @@ function buildHandoffTool(
         );
         if (result.status === 'no_advisor') {
           return 'No hay asesores humanos configurados todavía — informale al cliente que en breve alguien del equipo se va a comunicar, sin inventar un nombre ni un tiempo exacto.';
+        }
+        // Todos los asesores están ocupados en relay con otro cliente (ver AdvisorService.
+        // pickFreeAdvisor) — el cliente queda en la fila en vez de fallar, y se lo seguís
+        // atendiendo con normalidad mientras espera (ver el gate de whatsapp.service.ts: la IA
+        // NO se corta para un cliente en cola, solo para uno ya en relay activo).
+        if (result.status === 'queued' || result.status === 'already_queued') {
+          outcome.queuePosition = result.position;
+          outcome.alreadyQueued = result.status === 'already_queued';
+          if (result.status === 'already_queued') {
+            return `Este cliente ya está en la fila de espera de un asesor, en la posición ${result.position} — NO lo vuelvas a encolar. Avisale de forma breve y cordial que sigue en la fila, y seguí ayudándolo con lo que necesite.`;
+          }
+          return `Ahora mismo todos los asesores están ocupados — el cliente quedó en la fila de espera, en la posición ${result.position}. Confirmale eso de forma breve y cordial, y seguí ayudándolo con lo que necesite mientras espera.`;
         }
         outcome.advisor = result.advisor;
         // Se guarda el status además del texto para el modelo — si la llamada al proveedor de IA
@@ -374,7 +386,7 @@ export class AIService {
     // derivación exitosa se perdía del todo: se le mandaba al cliente el mensaje genérico de error
     // y nunca se guardaba la reserva del asesor (bot_contacts.handoff_advisor_id/handoff_expires_at
     // quedaban en null pese a que advisors.handoff_count ya se había incrementado).
-    const handoffOutcome: { advisor?: Advisor; alreadyPending?: boolean } = {};
+    const handoffOutcome: { advisor?: Advisor; alreadyPending?: boolean; queuePosition?: number; alreadyQueued?: boolean } = {};
 
     try {
       let system: string;
@@ -442,6 +454,12 @@ export class AIService {
           ? `Ya te había comunicado con ${handoffOutcome.advisor.name}, nuestro asesor — en breve te responde. Si necesitás algo más mientras tanto, contame.`
           : `Perfecto, te estoy comunicando con ${handoffOutcome.advisor.name}, nuestro asesor. En breve te contacta para ayudarte, y cuando terminemos te voy a preguntar si quedó resuelta tu consulta.`;
         return { text, handoffAdvisor: handoffOutcome.advisor };
+      }
+      if (handoffOutcome.queuePosition !== undefined) {
+        const text = handoffOutcome.alreadyQueued
+          ? `Seguís en la fila de espera de un asesor, en la posición ${handoffOutcome.queuePosition}. Mientras tanto, ¿te puedo ayudar con algo más?`
+          : `Ahora mismo todos nuestros asesores están ocupados — quedaste en la fila, en la posición ${handoffOutcome.queuePosition}. Mientras esperás te puedo seguir ayudando, contame qué necesitás.`;
+        return { text };
       }
 
       if (!hasApiKey) {

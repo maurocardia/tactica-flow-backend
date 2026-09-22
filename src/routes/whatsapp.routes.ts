@@ -277,6 +277,56 @@ router.put('/handoff-reservation-minutes', async (req: Request, res: Response) =
   }
 });
 
+// Cada cuántos minutos un cliente en la cola de espera (sin asesor todavía) recibe un mensaje con
+// su posición actual — ver AdvisorQueueService/AdvisorQueueWorker.
+const QUEUE_REMINDER_MINUTES_MIN = 1;
+const QUEUE_REMINDER_MINUTES_MAX = 1440;
+router.put('/queue-reminder-minutes', async (req: Request, res: Response) => {
+  const { minutes } = req.body;
+  if (
+    typeof minutes !== 'number' ||
+    !Number.isInteger(minutes) ||
+    minutes < QUEUE_REMINDER_MINUTES_MIN ||
+    minutes > QUEUE_REMINDER_MINUTES_MAX
+  ) {
+    return res.status(400).json({
+      error: `El campo "minutes" debe ser un entero entre ${QUEUE_REMINDER_MINUTES_MIN} y ${QUEUE_REMINDER_MINUTES_MAX}`
+    });
+  }
+
+  try {
+    const user = await AuthService.setQueueReminderMinutes(req.user!.id, minutes);
+    res.json({ queueReminderMinutes: user?.queueReminderMinutes ?? minutes });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar el intervalo de recordatorio de la cola' });
+  }
+});
+
+// Timeout de inactividad de un relay YA ACTIVO (distinto de handoff-reservation-minutes, que es
+// la ventana antes/al asignar) — ver AdvisorService.getRelayInactivityMinutes.
+const RELAY_INACTIVITY_MINUTES_MIN = 1;
+const RELAY_INACTIVITY_MINUTES_MAX = 1440;
+router.put('/relay-inactivity-minutes', async (req: Request, res: Response) => {
+  const { minutes } = req.body;
+  if (
+    typeof minutes !== 'number' ||
+    !Number.isInteger(minutes) ||
+    minutes < RELAY_INACTIVITY_MINUTES_MIN ||
+    minutes > RELAY_INACTIVITY_MINUTES_MAX
+  ) {
+    return res.status(400).json({
+      error: `El campo "minutes" debe ser un entero entre ${RELAY_INACTIVITY_MINUTES_MIN} y ${RELAY_INACTIVITY_MINUTES_MAX}`
+    });
+  }
+
+  try {
+    const user = await AuthService.setRelayInactivityMinutes(req.user!.id, minutes);
+    res.json({ relayInactivityMinutes: user?.relayInactivityMinutes ?? minutes });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar el timeout de inactividad del relay' });
+  }
+});
+
 // Modo de respuesta del bot (Híbrido/Solo IA/Solo Flujos) — ver ChatbotModule.tsx y
 // BotEngineService.processIncomingMessage.
 const VALID_BOT_MODES: BotMode[] = ['flow_only', 'ai_only', 'hybrid'];

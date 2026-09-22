@@ -357,6 +357,48 @@ const SCHEMA_SQL = `
   END $$;
   ALTER TABLE users ADD COLUMN IF NOT EXISTS handoff_reservation_minutes INT NOT NULL DEFAULT 30;
 
+  -- Relay bot↔asesor↔cliente + cola de espera (AdvisorService/AdvisorQueueService): mientras un
+  -- asesor está en relay activo con un cliente, cada mensaje de cada lado se le reenvía tal cual
+  -- al otro por el número del bot (ninguno ve el número real del otro) — reusa handoff_advisor_id/
+  -- handoff_expires_at de arriba como marca de "relay activo", pero ahora ese vencimiento se corre
+  -- hacia adelante con cada mensaje relayado (sliding timeout, ver relay_inactivity_minutes más
+  -- abajo): mientras haya actividad de cualquiera de los dos lados no vence, y si se queda callado
+  -- se cierra solo.
+  --
+  -- Un asesor atiende UN cliente activo a la vez (ver AdvisorService.pickFreeAdvisor: excluye a
+  -- los que ya tienen una fila en bot_contacts con handoff_expires_at sin vencer). Si ninguno está
+  -- libre, el cliente entra acá en vez de quedar sin asignar.
+  CREATE TABLE IF NOT EXISTS advisor_queue (
+    id SERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    jid TEXT NOT NULL,
+    customer_name TEXT NOT NULL,
+    requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_reminder_at TIMESTAMPTZ,
+    UNIQUE (user_id, jid)
+  );
+  CREATE INDEX IF NOT EXISTS idx_advisor_queue_user_requested ON advisor_queue(user_id, requested_at ASC);
+
+  -- Desde cuándo este asesor quedó libre (relay cerrado) — para que, cuando se libera un cupo y
+  -- hay más de un asesor libre al mismo tiempo, el próximo de la cola se le asigne al que lleva
+  -- MÁS TIEMPO desocupado (ver AdvisorService.pickFreeAdvisor). NULL = nunca tuvo un relay
+  -- cerrado todavía (ordena primero, mismo criterio que last_handoff_at ASC NULLS FIRST de
+  -- pickNextAdvisor).
+  ALTER TABLE advisors ADD COLUMN IF NOT EXISTS freed_at TIMESTAMPTZ;
+
+  -- Cada cuántos minutos un cliente EN LA COLA (todavía sin asesor) recibe un mensaje con su
+  -- posición actual — ver AdvisorQueueService y el mismo panel de "Asesores humanos" donde vive
+  -- handoff_reservation_minutes de arriba.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS queue_reminder_minutes INT NOT NULL DEFAULT 10;
+
+  -- Timeout de inactividad del RELAY ya activo (ver slideHandoffExpiry en botContact.service.ts) —
+  -- distinto de handoff_reservation_minutes: ese es cuánto dura la reserva ANTES/AL ASIGNAR
+  -- (evita un segundo asesor mientras el primero todavía no arrancó a atender); este es cuánto
+  -- silencio tolera una charla YA EN CURSO antes de darla por abandonada y cerrarla sola. Antes
+  -- reusaban el mismo número — se separan a pedido explícito del usuario, configurable aparte en
+  -- el mismo panel de "Asesores humanos".
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS relay_inactivity_minutes INT NOT NULL DEFAULT 60;
+
   -- Adjuntos multimedia de los bloques de flujo (Enviar Imagen/Video/Audio/Documento). Los bytes
   -- se guardan acá y se cargan en proceso para pasárselos a Baileys como Buffer — así no hace
   -- falta exponer una URL pública ni que el backend sea alcanzable desde internet.

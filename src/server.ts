@@ -12,6 +12,7 @@ import { initDatabase } from './config/db.js';
 import { ConversationService } from './services/conversation.service.js';
 import { KeywordRuleService } from './services/keywordRule.service.js';
 import { SchedulerWorker } from './services/scheduler.worker.js';
+import { AdvisorQueueWorker } from './services/advisorQueue.worker.js';
 import { WhatsappService } from './services/whatsapp.service.js';
 
 dotenv.config();
@@ -76,6 +77,9 @@ async function start() {
     await Promise.all([ConversationService.seedIfEmpty(), KeywordRuleService.seedIfEmpty()]);
     // Iniciar worker de mensajes programados
     SchedulerWorker.start(30000);
+    // Recordatorios de posición en la cola de asesores + promoción automática al liberarse un
+    // cupo por timeout (ver AdvisorQueueWorker) — cada 1 minuto alcanza, no es un dato urgente.
+    AdvisorQueueWorker.start(60000);
     // Reconectar automáticamente sesiones activas de WhatsApp guardadas en PostgreSQL
     WhatsappService.reconnectAllActiveSessions();
   } catch (err) {
