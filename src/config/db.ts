@@ -388,8 +388,19 @@ const SCHEMA_SQL = `
 
   -- Cada cuántos minutos un cliente EN LA COLA (todavía sin asesor) recibe un mensaje con su
   -- posición actual — ver AdvisorQueueService y el mismo panel de "Asesores humanos" donde vive
-  -- handoff_reservation_minutes de arriba.
+  -- handoff_reservation_minutes de arriba. Columna legacy: reemplazada por queue_reminder_seconds
+  -- (a pedido del usuario, para poder configurar recordatorios de menos de un minuto), se deja
+  -- sin usar en vez de borrarla por si algo externo todavía la lee.
   ALTER TABLE users ADD COLUMN IF NOT EXISTS queue_reminder_minutes INT NOT NULL DEFAULT 10;
+
+  -- Igual que queue_reminder_minutes, pero en segundos — permite recordatorios más frecuentes que
+  -- uno por minuto. Al agregarse por primera vez, Postgres rellena TODAS las filas con el DEFAULT
+  -- (600s = 10min); el UPDATE de abajo solo corrige esas filas recién creadas usando el valor viejo
+  -- en minutos — es un no-op para cualquier fila que ya haya sido tocada por el switch en segundos
+  -- (ver setQueueReminderSeconds), porque esas ya no van a estar en el default exacto salvo que
+  -- coincida (en cuyo caso el valor no cambia igual).
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS queue_reminder_seconds INT NOT NULL DEFAULT 600;
+  UPDATE users SET queue_reminder_seconds = queue_reminder_minutes * 60 WHERE queue_reminder_seconds = 600;
 
   -- Timeout de inactividad del RELAY ya activo (ver slideHandoffExpiry en botContact.service.ts) —
   -- distinto de handoff_reservation_minutes: ese es cuánto dura la reserva ANTES/AL ASIGNAR

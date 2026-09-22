@@ -2,6 +2,12 @@ import { db } from '../config/db.js';
 import { WhatsappService } from './whatsapp.service.js';
 import { identityTypeOfJid, IdentityType } from '../utils/whatsappIdentity.js';
 
+// Valor de `minutes` que AdvisorService.getReservationMinutes/reserveHandoffAdvisor tratan como
+// "reserva sin límite de tiempo" (a pedido del usuario) — 0 nunca tuvo sentido como duración real
+// (una reserva de 0 minutos venceria al instante), así que se lo reutiliza como sentinel en vez de
+// agregar una columna NULLABLE aparte.
+export const UNLIMITED_RESERVATION_MINUTES = 0;
+
 export interface BotContact {
   id: number;
   userId: number;
@@ -215,10 +221,17 @@ export class BotContactService {
    * otro camino de derivación le asigne un SEGUNDO asesor al mismo cliente mientras el primero
    * todavía tiene tiempo de contactarlo. Pasado ese tiempo, la reserva vence sola (no hace falta
    * limpiarla a mano) y un nuevo pedido de asesor puede volver a asignar.
+   *
+   * `minutes <= 0` (ver UNLIMITED_RESERVATION_MINUTES) es "sin límite": la reserva se pone a
+   * vencer dentro de 100 años en vez de nunca — así el resto del código (que siempre compara
+   * `handoff_expires_at > now()`) no necesita distinguir NULL/infinito como caso aparte.
    */
   static async reserveHandoffAdvisor(userId: number, jid: string, advisorId: number | null, minutes: number): Promise<void> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';
-    const expiresAt = new Date(Date.now() + minutes * 60 * 1000);
+    const expiresAt =
+      minutes <= UNLIMITED_RESERVATION_MINUTES
+        ? new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000)
+        : new Date(Date.now() + minutes * 60 * 1000);
     await db.query(
       `UPDATE bot_contacts
        SET handoff_advisor_id = $1, handoff_started_at = now(), handoff_expires_at = $2

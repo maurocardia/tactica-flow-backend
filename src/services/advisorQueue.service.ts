@@ -73,14 +73,14 @@ export class AdvisorQueueService {
     return rows.map((r) => r.user_id);
   }
 
-  /** Filas de cola a las que les toca su recordatorio de posición (users.queue_reminder_minutes,
-   * default 10 — mismo panel que handoff_reservation_minutes). */
+  /** Filas de cola a las que les toca su recordatorio de posición (users.queue_reminder_seconds,
+   * default 600 — mismo panel que handoff_reservation_minutes). */
   static async listDueForReminder(): Promise<{ id: number; userId: number; jid: string; customerName: string }[]> {
     const { rows } = await db.query(
       `SELECT q.id, q.user_id, q.jid, q.customer_name
        FROM advisor_queue q
        JOIN users u ON u.id = q.user_id
-       WHERE COALESCE(q.last_reminder_at, q.requested_at) <= now() - (u.queue_reminder_minutes || ' minutes')::interval`
+       WHERE COALESCE(q.last_reminder_at, q.requested_at) <= now() - (u.queue_reminder_seconds || ' seconds')::interval`
     );
     return rows.map((r) => ({ id: r.id, userId: r.user_id, jid: r.jid, customerName: r.customer_name }));
   }
