@@ -1,4 +1,4 @@
-import { makeWASocket, makeCacheableSignalKeyStore, DisconnectReason, downloadMediaMessage, proto, type WASocket } from '@whiskeysockets/baileys';
+import { makeWASocket, makeCacheableSignalKeyStore, DisconnectReason, downloadMediaMessage, jidNormalizedUser, proto, type WASocket } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode';
 import { io } from '../server.js';
 import { db } from '../config/db.js';
@@ -14,6 +14,7 @@ import { HandoffService } from './handoff.service.js';
 import { FlowEngineService } from './flowEngine.service.js';
 import { FlowOutboundMessage } from '../types/flow.js';
 import { looksLikePhoneDigits } from '../utils/whatsappIdentity.js';
+import { trace, preview } from '../utils/trace.js';
 
 export type WhatsappConnectionStatus = 'disconnected' | 'connecting' | 'qr_ready' | 'connected';
 
@@ -124,6 +125,18 @@ async function toCanonicalJid(userId: number, jid: string): Promise<string> {
   } catch (err) {
     console.error('⚠️ [WhatsApp] No se pudo resolver el @lid contra bot_contacts:', err);
   }
+  // Baileys 7 lleva su propia tabla LID↔teléfono (signalRepository.lidMapping, persistida en las
+  // llaves 'lid-mapping' de whatsapp_sessions) — la fuente más completa, la que usa para cifrar.
+  try {
+    const pn = await sessions.get(userId)?.socket.signalRepository.lidMapping.getPNForLID(jid);
+    if (pn) {
+      const phoneJid = jidNormalizedUser(pn); // viene con sufijo de dispositivo ("573...:0@...")
+      rememberLidMapping(userId, jid, phoneJid);
+      return phoneJid;
+    }
+  } catch (err) {
+    console.error('⚠️ [WhatsApp] No se pudo resolver el @lid con el lidMapping de Baileys:', err);
+  }
   return jid;
 }
 
@@ -159,23 +172,52 @@ function isTransientSendError(error: unknown): boolean {
   return /timed out|timeout|econnreset|econnrefused|etimedout/i.test(err?.message || '');
 }
 
+// Ruta de cada mensaje que manda el bot ("puente asesor→cliente", "derivación→asesor", etc.),
+// por id — para que la traza ESTADO_ENTREGA (evento messages.update) diga de qué tramo del
+// recorrido es cada confirmación de entrega/lectura. En memoria, con tope.
+const routeByMsgId = new Map<string, string>();
+const MAX_ROUTES = 5000;
+
+function rememberRoute(msgId: string | null | undefined, route: string) {
+  if (!msgId) return;
+  routeByMsgId.set(msgId, route);
+  if (routeByMsgId.size > MAX_ROUTES) {
+    const oldest = routeByMsgId.keys().next().value;
+    if (oldest !== undefined) routeByMsgId.delete(oldest);
+  }
+}
+
+const DELIVERY_STATUS_NAMES: Record<number, string> = {
+  0: 'ERROR',
+  1: 'PENDIENTE',
+  2: 'ENVIADO_AL_SERVIDOR',
+  3: 'ENTREGADO',
+  4: 'LEIDO',
+  5: 'REPRODUCIDO'
+};
+
 async function sendWithRetry(
   socket: WASocket,
   jid: string,
   content: Parameters<WASocket['sendMessage']>[1],
+  route = 'bot→cliente',
   maxRetries = 2
 ): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
-      await socket.sendMessage(jid, content);
+      const sent = await socket.sendMessage(jid, content);
+      rememberRoute(sent?.key?.id, route);
+      trace('ENVIO_OK', { ruta: route, para: jid, msgId: sent?.key?.id, intento: attempt + 1 });
       return;
     } catch (error) {
       if (attempt < maxRetries && isTransientSendError(error)) {
         const delayMs = 2000 * (attempt + 1);
         console.warn(`⏳ [WhatsApp] Timeout enviando a ${jid} (intento ${attempt + 1}/${maxRetries + 1}), reintentando en ${delayMs}ms...`);
+        trace('ENVIO_REINTENTO', { ruta: route, para: jid, intento: attempt + 1, esperaMs: delayMs });
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         continue;
       }
+      trace('ENVIO_ERROR', { ruta: route, para: jid, intento: attempt + 1, error: (error as Error)?.message });
       throw error;
     }
   }
@@ -510,7 +552,17 @@ export class WhatsappService {
           auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys) },
           printQRInTerminal: false,
           defaultQueryTimeoutMs: 90000,
-          getMessage: async (key) => (key.id ? recentMessageContent.get(`${userId}:${key.id}`) : undefined)
+          getMessage: async (key) => {
+            const content = key.id ? recentMessageContent.get(`${userId}:${key.id}`) : undefined;
+            trace('REENVIO_SOLICITADO', {
+              usuario: userId,
+              msgId: key.id,
+              para: key.remoteJid,
+              ruta: key.id ? routeByMsgId.get(key.id) : undefined,
+              encontrado: !!content
+            });
+            return content;
+          }
         });
 
         const session: WhatsappSession = { socket, status: 'connecting', qrDataUrl: null };
@@ -590,10 +642,10 @@ export class WhatsappService {
     // con lo que WhatsApp le vaya mandando de la agenda, aunque el history sync completo esté
     // apagado; puede tardar en poblarse o, para algunos contactos, no llegar nunca (WhatsApp no
     // siempre comparte el nombre guardado del otro lado).
-    const onContactNames = async (contacts: { id: string; lid?: string; jid?: string; name?: string }[]) => {
+    const onContactNames = async (contacts: { id: string; lid?: string; phoneNumber?: string; name?: string }[]) => {
       for (const c of contacts) {
         // Aprende la equivalencia @lid <-> teléfono aunque el contacto no traiga nombre.
-        const phoneJid = c.id.endsWith('@s.whatsapp.net') ? c.id : c.jid;
+        const phoneJid = c.id.endsWith('@s.whatsapp.net') ? c.id : c.phoneNumber;
         const lidJid = c.id.endsWith('@lid') ? c.id : c.lid;
         rememberLidMapping(userId, lidJid, phoneJid);
       }
@@ -617,7 +669,31 @@ export class WhatsappService {
       }
     };
     socket.ev.on('contacts.upsert', onContactNames);
-    socket.ev.on('contacts.update', (updates) => onContactNames(updates.filter((u): u is { id: string; lid?: string; jid?: string; name?: string } => !!u.id)));
+    socket.ev.on('contacts.update', (updates) => onContactNames(updates.filter((u): u is { id: string; lid?: string; phoneNumber?: string; name?: string } => !!u.id)));
+
+    // Baileys 7 avisa cada equivalencia LID↔teléfono nueva que aprende — se suma a la tabla propia
+    // (lidToPhoneJid / bot_contacts.lid) que usa toCanonicalJid para reconocer asesores y clientes.
+    socket.ev.on('lid-mapping.update', ({ lid, pn }) => {
+      const phoneJid = jidNormalizedUser(pn);
+      rememberLidMapping(userId, jidNormalizedUser(lid), phoneJid);
+      trace('LID_APRENDIDO', { usuario: userId, lid, telefono: phoneJid });
+    });
+
+    // Estado de entrega de lo que manda el bot (enviado → entregado → leído). Es la confirmación de
+    // que un mensaje del puente llegó de verdad al teléfono del otro lado: si una ruta se queda en
+    // ENVIADO_AL_SERVIDOR sin pasar a ENTREGADO, el destinatario no lo pudo descifrar.
+    socket.ev.on('messages.update', (updates) => {
+      for (const { key, update } of updates) {
+        if (!key.fromMe || update.status === undefined || update.status === null) continue;
+        trace('ESTADO_ENTREGA', {
+          usuario: userId,
+          msgId: key.id,
+          para: key.remoteJid,
+          ruta: key.id ? routeByMsgId.get(key.id) : undefined,
+          estado: DELIVERY_STATUS_NAMES[update.status] ?? String(update.status)
+        });
+      }
+    });
 
     // "Sincronización rápida" (Issue: lista de contactos con orden/nombres desactualizados):
     // Baileys manda esto una sola vez apenas conecta (gracias a syncFullHistory arriba), con los
@@ -631,7 +707,7 @@ export class WhatsappService {
         try {
           const nameByJid = new Map<string, string>();
           for (const c of contacts) {
-            rememberLidMapping(userId, c.id?.endsWith('@lid') ? c.id : c.lid, c.id?.endsWith('@s.whatsapp.net') ? c.id : c.jid);
+            rememberLidMapping(userId, c.id?.endsWith('@lid') ? c.id : c.lid, c.id?.endsWith('@s.whatsapp.net') ? c.id : c.phoneNumber);
           }
           for (const c of contacts) {
             if (c.id && c.name) {
@@ -669,10 +745,22 @@ export class WhatsappService {
         // mientras Baileys le pide al remitente que lo reenvíe. NO se marca como visto: cuando el
         // reenvío llega bien descifrado trae el MISMO id, y antes isDuplicateMessage lo descartaba
         // como duplicado ("Mensaje duplicado ignorado" en los logs) — el mensaje real se perdía.
-        if (!msg.message || msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT) continue;
+        if (!msg.message || msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT) {
+          if (msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT) {
+            trace('DESCIFRADO_FALLIDO', {
+              usuario: userId,
+              msgId: msg.key?.id,
+              de: msg.key?.remoteJid,
+              deAlt: msg.key?.remoteJidAlt || msg.key?.participantAlt,
+              motivo: msg.messageStubParameters?.[0]
+            });
+          }
+          continue;
+        }
 
         if (isDuplicateMessage(userId, msg.key?.id)) {
           console.warn(`⚠️ [WhatsApp] Mensaje duplicado ignorado (id=${msg.key?.id}), usuario ${userId}.`);
+          trace('DUPLICADO_IGNORADO', { usuario: userId, msgId: msg.key?.id, de: msg.key?.remoteJid });
           continue;
         }
         try {
@@ -753,11 +841,11 @@ return connectPromise;
     // misma persona real (confirmado: un solo contacto real llegó a tener 13 filas separadas).
     // Baileys ya resuelve el equivalente en formato de teléfono en `participantPn`/`senderPn`
     // cuando lo sabe — preferimos siempre esa forma canónica.
-    const rawParticipantJid: string | undefined = isGroup ? msg.key?.participantPn || msg.key?.participant : undefined;
+    const rawParticipantJid: string | undefined = isGroup ? msg.key?.participantAlt || msg.key?.participant : undefined;
     const participantJid: string | undefined = rawParticipantJid ? await toCanonicalJid(userId, rawParticipantJid) : undefined;
     if (isGroup && !participantJid && !fromMe) return;
 
-    const canonicalIndividualJid: string | undefined = !isGroup ? msg.key?.senderPn || (await toCanonicalJid(userId, remoteJid)) : undefined;
+    const canonicalIndividualJid: string | undefined = !isGroup ? (msg.key?.remoteJidAlt ? jidNormalizedUser(msg.key.remoteJidAlt) : await toCanonicalJid(userId, remoteJid)) : undefined;
     const senderJid = isGroup ? participantJid : canonicalIndividualJid;
 
     // Preferimos el nombre real guardado en la agenda (si Baileys ya lo sincronizó) por sobre el
@@ -790,6 +878,18 @@ return connectPromise;
     // número del cliente, ver AdvisorService.handleAdvisorCommand), se corta acá — no se guarda
     // como conversación de cliente ni pasa por bot_contacts/gating/IA. Solo aplica a chats
     // individuales entrantes (no grupos, no fromMe).
+    trace('RECIBIDO', {
+      usuario: userId,
+      msgId: msg.key?.id,
+      de: remoteJid,
+      deAlt: msg.key?.remoteJidAlt || msg.key?.participantAlt,
+      telefono: phone,
+      nombre: plainContactName,
+      grupo: isGroup || undefined,
+      propio: fromMe || undefined,
+      texto: preview(text)
+    });
+
     if (!isGroup && !fromMe) {
       try {
         const { AdvisorService } = await import('./advisor.service.js');
@@ -847,7 +947,10 @@ return connectPromise;
     // Blacklist: gana por encima de CUALQUIER otro switch (Responder a todos, bot habilitado,
     // modo de respuesta, etc.) — un contacto en esta lista nunca recibe respuesta del bot, sin
     // excepción. Por eso se chequea primero, antes que nada más.
-    if (gating.isBlacklisted) return;
+    if (gating.isBlacklisted) {
+      trace('SIN_RESPUESTA', { usuario: userId, cliente: phone, msgId: msg.key?.id, motivo: 'contacto en Blacklist' });
+      return;
+    }
 
     // Relay: si este cliente tiene un asesor en relay activo (el asesor le escribió "FIN" todavía
     // no — ver AdvisorService.handleAdvisorCommand, que reenvía los mensajes DEL asesor hacia
@@ -860,8 +963,16 @@ return connectPromise;
         const { AdvisorService } = await import('./advisor.service.js');
         const activeAdvisor = await AdvisorService.getActiveHandoffAdvisor(userId, botContactJid);
         if (activeAdvisor) {
+          trace('PUENTE_CLIENTE_A_ASESOR', {
+            usuario: userId,
+            cliente: phone,
+            asesor: activeAdvisor.name,
+            asesorTel: activeAdvisor.phone,
+            msgId: msg.key?.id,
+            texto: preview(text)
+          });
           try {
-            await WhatsappService.sendTextMessage(activeAdvisor.phone, `🧑 *${plainContactName}:* ${text}`, userId);
+            await WhatsappService.sendTextMessage(activeAdvisor.phone, `🧑 *${plainContactName}:* ${text}`, userId, 'puente cliente→asesor');
           } catch (err) {
             console.error(`⚠️ [WhatsApp] No se pudo reenviar el mensaje del cliente al asesor "${activeAdvisor.name}":`, err);
           }
@@ -874,14 +985,20 @@ return connectPromise;
       }
     }
 
-    if (!user?.botEnabled) return;
+    if (!user?.botEnabled) {
+      trace('SIN_RESPUESTA', { usuario: userId, cliente: phone, msgId: msg.key?.id, motivo: 'bot apagado en la cuenta' });
+      return;
+    }
 
     // "Responder a todos" vs "Responder a contactos seleccionados": con el modo "todos" activado
     // se salta el switch por contacto y le responde a cualquiera; si no, sigue el comportamiento
     // de siempre — el switch vive en bot_contacts (no en conversations), arranca apagado para
     // contactos nuevos (salvo que "Activar bot para contactos nuevos" esté prendido) y queda
     // guardado tal cual entre sesiones de Baileys (no se resetea solo).
-    if (!user.botReplyToAll && !gating.botEnabled) return;
+    if (!user.botReplyToAll && !gating.botEnabled) {
+      trace('SIN_RESPUESTA', { usuario: userId, cliente: phone, msgId: msg.key?.id, motivo: 'bot apagado para este contacto' });
+      return;
+    }
 
     const botResult = await BotEngineService.processIncomingMessage(
       text,
@@ -906,7 +1023,18 @@ return connectPromise;
       },
       userId
     );
-    if (!botResult) return;
+    if (!botResult) {
+      trace('SIN_RESPUESTA', { usuario: userId, cliente: phone, msgId: msg.key?.id, motivo: 'el motor del bot no generó respuesta' });
+      return;
+    }
+    trace('BOT_RESPONDE', {
+      usuario: userId,
+      cliente: phone,
+      msgId: msg.key?.id,
+      fuente: botResult.source,
+      deriva: botResult.handoff ? true : undefined,
+      texto: preview(botResult.replyText)
+    });
 
     // "Delay humanizado" (Issue #29 [BE-048]): espera proporcional a la longitud de la respuesta,
     // con el indicador "escribiendo..." de WhatsApp visible durante esa espera — ver humanDelay().
@@ -947,6 +1075,15 @@ return connectPromise;
           request: botResult.handoff,
           resolvedAdvisor: botResult.resolvedAdvisor
         });
+        trace('DERIVACION', {
+          usuario: userId,
+          cliente: phone,
+          asesor: handoffResult.advisor?.name,
+          asesorTel: handoffResult.advisor?.phone,
+          notificado: handoffResult.notified,
+          yaAsignado: handoffResult.alreadyPending || undefined,
+          resultado: handoffResult.advisor ? 'asesor reservado' : 'sin asesor activo'
+        });
         console.log(
           handoffResult.advisor
             ? `🔀 [WhatsApp] Conversación derivada a "${handoffResult.advisor.name}" (asesor notificado=${handoffResult.notified}).`
@@ -961,7 +1098,7 @@ return connectPromise;
           try {
             await sendWithRetry(socket, remoteJid, {
               text: `Ya te había comunicado con ${handoffResult.advisor.name} — en breve te responde. Si necesitás algo más mientras tanto, contame.`
-            });
+            }, 'aviso ya asignado→cliente');
           } catch (err) {
             console.error('❌ [WhatsApp] Error avisando que el cliente ya estaba en fila:', err);
           }
@@ -1011,7 +1148,7 @@ return connectPromise;
     return looksLikePhoneDigits(cleanPhone) ? `${cleanPhone}@s.whatsapp.net` : `${cleanPhone}@lid`;
   }
 
-  static async sendTextMessage(phone: string, text: string, userId?: number): Promise<boolean> {
+  static async sendTextMessage(phone: string, text: string, userId?: number, route = 'mensaje'): Promise<boolean> {
     let targetSession: WhatsappSession | undefined;
     if (userId) {
       targetSession = sessions.get(userId);
@@ -1024,13 +1161,24 @@ return connectPromise;
       }
     }
 
+    const jid = this.phoneToJid(phone);
     if (!targetSession || targetSession.status !== 'connected') {
+      trace('ENVIO_SIN_SESION', { ruta: route, para: jid, usuario: userId, estado: targetSession?.status || 'sin sesión' });
       throw new Error('No hay una sesión de WhatsApp conectada para enviar el mensaje.');
     }
 
-    const jid = this.phoneToJid(phone);
-    await sendWithRetry(targetSession.socket, jid, { text });
+    await sendWithRetry(targetSession.socket, jid, { text }, route);
     return true;
+  }
+
+  /**
+   * Igual que sendTextMessage, pero con el socket de Baileys ya a mano (ej. HandoffService, que
+   * notifica al asesor sobre el mismo socket por el que llegó el mensaje del cliente). Mismos
+   * reintentos y trazas que el resto de los envíos — antes HandoffService mandaba con
+   * socket.sendMessage directo, sin reintentar ante un timeout momentáneo de Baileys.
+   */
+  static async sendTextMessageOnSocket(socket: WASocket, jid: string, text: string, route: string): Promise<void> {
+    await sendWithRetry(socket, jid, { text }, route);
   }
 
   /**

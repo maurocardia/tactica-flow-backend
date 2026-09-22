@@ -1,5 +1,6 @@
 import { db } from '../config/db.js';
 import { looksLikePhoneDigits } from '../utils/whatsappIdentity.js';
+import { trace, preview } from '../utils/trace.js';
 
 // Asesores humanos (panel: botón "Asesores" en ChatbotModule.tsx, AdvisorManagerModal.tsx) — a
 // quién deriva el bot una conversación cuando decide que necesita intervención de una persona.
@@ -242,10 +243,16 @@ export class AdvisorService {
     const jid = WhatsappService.phoneToJid(customerPhone);
 
     const existing = await AdvisorService.getActiveHandoffAdvisor(userId, jid);
-    if (existing) return { status: 'already_pending', advisor: existing };
+    if (existing) {
+      trace('DERIVACION_YA_ASIGNADO', { usuario: userId, cliente: jid, asesor: existing.name });
+      return { status: 'already_pending', advisor: existing };
+    }
 
     const queuedPosition = await AdvisorQueueService.getPosition(userId, jid);
-    if (queuedPosition !== null) return { status: 'already_queued', position: queuedPosition };
+    if (queuedPosition !== null) {
+      trace('DERIVACION_YA_EN_COLA', { usuario: userId, cliente: jid, posicion: queuedPosition });
+      return { status: 'already_queued', position: queuedPosition };
+    }
 
     const advisor = await AdvisorService.pickFreeAdvisor(userId);
     if (!advisor) {
@@ -253,11 +260,16 @@ export class AdvisorService {
         'SELECT COUNT(*)::int AS count FROM advisors WHERE user_id = $1 AND is_active = true',
         [userId]
       );
-      if (activeCountRows[0].count === 0) return { status: 'no_advisor' };
+      if (activeCountRows[0].count === 0) {
+        trace('DERIVACION_SIN_ASESORES', { usuario: userId, cliente: jid });
+        return { status: 'no_advisor' };
+      }
 
       const position = await AdvisorQueueService.enqueue(userId, jid, customerName);
+      trace('COLA_ENCOLADO', { usuario: userId, cliente: jid, nombre: customerName, posicion: position, motivo: 'todos los asesores ocupados' });
       return { status: 'queued', position };
     }
+    trace('DERIVACION_ASESOR_ELEGIDO', { usuario: userId, cliente: jid, asesor: advisor.name, asesorTel: advisor.phone });
 
     // Reservar ACÁ, antes de generar el resumen y notificar al asesor — no después. El llamador
     // (whatsapp.service.ts) recién llama a HandoffService.execute (que es quien reserva vía
@@ -272,8 +284,10 @@ export class AdvisorService {
     try {
       const { BotContactService } = await import('./botContact.service.js');
       await BotContactService.reserveHandoffAdvisor(userId, jid, advisor.id, reservationMinutes);
+      trace('DERIVACION_RESERVA_OK', { usuario: userId, cliente: jid, asesor: advisor.name, minutos: reservationMinutes });
     } catch (err) {
       console.error('❌ [AdvisorService] Error reservando el asesor antes de notificarlo:', err);
+      trace('DERIVACION_RESERVA_ERROR', { usuario: userId, cliente: jid, asesor: advisor.name, error: (err as Error)?.message });
     }
 
     let summary = 'El cliente necesita atención — no se pudo generar un resumen automático.';
@@ -301,9 +315,11 @@ export class AdvisorService {
     ].join('\n');
 
     try {
-      await WhatsappService.sendTextMessage(advisor.phone, message, userId);
+      await WhatsappService.sendTextMessage(advisor.phone, message, userId, 'derivación→asesor');
+      trace('DERIVACION_NOTIFICADA', { usuario: userId, cliente: jid, asesor: advisor.name, asesorTel: advisor.phone });
     } catch (err) {
       console.error(`⚠️ [AdvisorService] No se pudo notificar al asesor "${advisor.name}":`, err);
+      trace('DERIVACION_NOTIFICACION_ERROR', { usuario: userId, cliente: jid, asesor: advisor.name, error: (err as Error)?.message });
     }
 
     return { status: 'handed_off', advisor, summary };
@@ -323,7 +339,11 @@ export class AdvisorService {
     const { WhatsappService } = await import('./whatsapp.service.js');
 
     const next = await AdvisorQueueService.dequeueFirst(userId);
-    if (!next) return;
+    if (!next) {
+      trace('COLA_VACIA', { usuario: userId, asesorLibre: advisor.name });
+      return;
+    }
+    trace('COLA_DESPACHADO', { usuario: userId, cliente: next.jid, nombre: next.customerName, asesor: advisor.name, asesorTel: advisor.phone });
 
     const minutes = await AdvisorService.getReservationMinutes(userId);
     await BotContactService.reserveHandoffAdvisor(userId, next.jid, advisor.id, minutes);
@@ -337,13 +357,14 @@ export class AdvisorService {
           `📱 Cliente: ${next.customerName} (${phone})`,
           '💬 Escribile por acá mismo y se lo reenvío — cuando termines, escribí FIN.',
         ].join('\n'),
-        userId
+        userId,
+        'cola→asesor'
       );
     } catch (err) {
       console.error(`⚠️ [AdvisorService] No se pudo notificar al asesor "${advisor.name}" sobre la promoción de cola:`, err);
     }
     try {
-      await WhatsappService.sendTextMessage(phone, `Ya te podés comunicar con ${advisor.name}, nuestro asesor — escribile por acá mismo.`, userId);
+      await WhatsappService.sendTextMessage(phone, `Ya te podés comunicar con ${advisor.name}, nuestro asesor — escribile por acá mismo.`, userId, 'cola→cliente');
     } catch (err) {
       console.error('⚠️ [AdvisorService] No se pudo avisarle al cliente que ya tiene asesor:', err);
     }
@@ -354,7 +375,7 @@ export class AdvisorService {
    * la reserva por id de fila en vez de por jid, ver clearHandoffPause). */
   static async notifyCustomerFollowUp(userId: number, jid: string): Promise<void> {
     const { WhatsappService } = await import('./whatsapp.service.js');
-    await WhatsappService.sendTextMessage(jid.split('@')[0], '¿Quedó resuelta tu consulta? Contame si necesitás algo más 🙂', userId);
+    await WhatsappService.sendTextMessage(jid.split('@')[0], '¿Quedó resuelta tu consulta? Contame si necesitás algo más 🙂', userId, 'seguimiento→cliente');
   }
 
   /**
@@ -379,10 +400,12 @@ export class AdvisorService {
     const active = !!reservation.advisorId && !!reservation.expiresAt && reservation.expiresAt > new Date();
 
     if (opts?.expectedAdvisorId && (!active || reservation.advisorId !== opts.expectedAdvisorId)) {
+      trace('ATENCION_CIERRE_RECHAZADO', { usuario: userId, cliente: jid, asesorEsperado: opts.expectedAdvisorId, asesorReservado: reservation.advisorId, activa: active });
       return 'mismatch';
     }
 
     await BotContactService.releaseHandoffReservationByJid(userId, jid);
+    trace('ATENCION_CERRADA', { usuario: userId, cliente: jid, asesorId: reservation.advisorId, estabaActiva: active });
     if (!active) return 'no_active_reservation';
 
     try {
@@ -408,7 +431,7 @@ export class AdvisorService {
   private static async replyToAdvisor(userId: number, advisor: Advisor, text: string): Promise<void> {
     const { WhatsappService } = await import('./whatsapp.service.js');
     try {
-      await WhatsappService.sendTextMessage(advisor.phone, text, userId);
+      await WhatsappService.sendTextMessage(advisor.phone, text, userId, 'respuesta→asesor');
     } catch (err) {
       console.error(`⚠️ [AdvisorService] No se pudo responder al asesor "${advisor.name}":`, err);
     }
@@ -437,10 +460,17 @@ export class AdvisorService {
 
     const { BotContactService } = await import('./botContact.service.js');
     const activeClientJid = await BotContactService.getActiveClientForAdvisor(userId, advisor.id);
-    if (!activeClientJid) return false;
+    if (!activeClientJid) {
+      // El que escribe ES un asesor, pero no tiene cliente asignado ahora: el mensaje sigue el
+      // camino normal (el bot le contesta como a cualquier contacto) y NO se reenvía a nadie.
+      trace('ASESOR_SIN_CLIENTE_ACTIVO', { usuario: userId, asesor: advisor.name, asesorTel: phone, texto: preview(text) });
+      return false;
+    }
+    trace('ASESOR_RECONOCIDO', { usuario: userId, asesor: advisor.name, asesorTel: phone, cliente: activeClientJid });
 
     const trimmed = text.trim();
     if (/^(fin|listo)$/i.test(trimmed)) {
+      trace('ASESOR_FIN', { usuario: userId, asesor: advisor.name, cliente: activeClientJid });
       const result = await AdvisorService.finishAdvisory(userId, activeClientJid, { expectedAdvisorId: advisor.id });
       const reply =
         result === 'notified'
@@ -456,8 +486,9 @@ export class AdvisorService {
     // charla activa.
     const { WhatsappService } = await import('./whatsapp.service.js');
     const minutes = await AdvisorService.getRelayInactivityMinutes(userId);
+    trace('PUENTE_ASESOR_A_CLIENTE', { usuario: userId, asesor: advisor.name, cliente: activeClientJid, texto: preview(text) });
     try {
-      await WhatsappService.sendTextMessage(activeClientJid.split('@')[0], `👨‍💼 *${advisor.name}:* ${text}`, userId);
+      await WhatsappService.sendTextMessage(activeClientJid.split('@')[0], `👨‍💼 *${advisor.name}:* ${text}`, userId, 'puente asesor→cliente');
     } catch (err) {
       console.error(`⚠️ [AdvisorService] No se pudo reenviar el mensaje del asesor "${advisor.name}" al cliente:`, err);
     }

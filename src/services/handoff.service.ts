@@ -4,6 +4,7 @@ import { BotContactService } from './botContact.service.js';
 import { FlowEngineService } from './flowEngine.service.js';
 import { FlowHandoffRequest } from '../types/flow.js';
 import { looksLikePhoneDigits } from '../utils/whatsappIdentity.js';
+import { trace } from '../utils/trace.js';
 
 // Ejecuta el bloque "Contactar Asesor" del editor visual de flujos: elige un asesor real (ver
 // AdvisorService.pickNextAdvisor/getById) y lo notifica por WhatsApp desde la misma línea de la
@@ -129,6 +130,17 @@ export class HandoffService {
       }
     }
 
+    // Reservar ANTES de notificar al asesor — no después. Si el asesor contestaba el aviso antes
+    // de que existiera la reserva, handleAdvisorCommand no le encontraba cliente activo y su primer
+    // mensaje caía al bot en vez de reenviarse (mismo caso que AdvisorService.handoffConversation).
+    try {
+      await BotContactService.reserveHandoffAdvisor(ctx.userId, ctx.botContactJid, advisor.id, reservationMinutes);
+      trace('DERIVACION_RESERVA_OK', { usuario: ctx.userId, cliente: ctx.botContactJid, asesor: advisor.name, minutos: reservationMinutes, origen: 'flujo' });
+    } catch (err) {
+      console.error('❌ [HandoffService] Error reservando el asesor para esta conversación:', err);
+      trace('DERIVACION_RESERVA_ERROR', { usuario: ctx.userId, cliente: ctx.botContactJid, asesor: advisor.name, error: (err as Error)?.message, origen: 'flujo' });
+    }
+
     // Notificar al asesor es best-effort: si falla (número inválido, sin WhatsApp, etc.), el
     // cliente igual ya recibió (o va a recibir) la respuesta del flujo — nunca debe tumbar nada.
     let notified = false;
@@ -149,16 +161,14 @@ export class HandoffService {
         mensaje: ctx.lastMessageText,
         fecha: new Date().toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' } as any),
       });
-      await ctx.socket.sendMessage(advisorJid, { text });
+      // Import dinámico: whatsapp.service.ts ya importa este archivo, así se evita el ciclo.
+      const { WhatsappService } = await import('./whatsapp.service.js');
+      await WhatsappService.sendTextMessageOnSocket(ctx.socket, advisorJid, text, 'derivación→asesor');
       notified = true;
+      trace('DERIVACION_NOTIFICADA', { usuario: ctx.userId, cliente: ctx.botContactJid, asesor: advisor.name, asesorTel: advisor.phone, origen: 'flujo' });
     } catch (err) {
       console.error(`⚠️ [HandoffService] No se pudo notificar al asesor "${advisor.name}":`, err);
-    }
-
-    try {
-      await BotContactService.reserveHandoffAdvisor(ctx.userId, ctx.botContactJid, advisor.id, reservationMinutes);
-    } catch (err) {
-      console.error('❌ [HandoffService] Error reservando el asesor para esta conversación:', err);
+      trace('DERIVACION_NOTIFICACION_ERROR', { usuario: ctx.userId, cliente: ctx.botContactJid, asesor: advisor.name, error: (err as Error)?.message, origen: 'flujo' });
     }
 
     return { advisor, notified };

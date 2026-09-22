@@ -1,6 +1,7 @@
 import { AdvisorQueueService } from './advisorQueue.service.js';
 import { AdvisorService } from './advisor.service.js';
 import { WhatsappService } from './whatsapp.service.js';
+import { trace } from '../utils/trace.js';
 
 let intervalRef: NodeJS.Timeout | null = null;
 let isProcessing = false;
@@ -49,9 +50,11 @@ export class AdvisorQueueWorker {
         await WhatsappService.sendTextMessage(
           item.jid.split('@')[0],
           `Seguís en la fila de espera de un asesor — vas en la posición ${position}. En cuanto se libere alguien te conectamos.`,
-          item.userId
+          item.userId,
+          'cola recordatorio→cliente'
         );
         await AdvisorQueueService.markReminded(item.id);
+        trace('COLA_RECORDATORIO', { usuario: item.userId, cliente: item.jid, posicion: position });
       } catch (err) {
         console.error(`❌ [AdvisorQueueWorker] Error mandando recordatorio de cola a ${item.jid}:`, err);
       }
@@ -65,7 +68,10 @@ export class AdvisorQueueWorker {
       // el siguiente pickFreeAdvisor de esta misma vuelta ya no lo vuelve a elegir.
       while (await AdvisorQueueService.hasQueue(userId)) {
         const advisor = await AdvisorService.pickFreeAdvisor(userId);
-        if (!advisor) break; // nadie libre por ahora — se reintenta en el próximo tick
+        if (!advisor) {
+          trace('COLA_SIN_ASESOR_LIBRE', { usuario: userId });
+          break; // nadie libre por ahora — se reintenta en el próximo tick
+        }
         try {
           await AdvisorService.promoteNextFromQueue(userId, advisor);
         } catch (err) {
