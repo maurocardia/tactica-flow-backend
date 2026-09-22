@@ -354,9 +354,11 @@ FlowEngineService.setProactiveSender(async (ctx) => {
   // Mismo chequeo que handleIncomingMessage antes de responder — si el usuario bloqueó al
   // contacto o apagó el bot DESDE que se armó este temporizador, no corresponde mandarle nada igual.
   const gating = await BotContactService.getGatingFlags(ctx.userId, ctx.botContactJid);
-  if (gating.isBlacklisted) return;
   const user = await AuthService.getUserById(ctx.userId);
   if (!user?.botEnabled) return;
+  // Blacklist: bloquea en modo "Contactos/Grupos", pero NO cuando "Responder a todos" está
+  // activado (a pedido explícito del usuario) — ver el mismo chequeo en handleIncomingMessage.
+  if (gating.isBlacklisted && !user.botReplyToAll) return;
   if (!user.botReplyToAll && !gating.botEnabled) return;
 
   await sendFlowMessages(ctx.userId, session.socket, ctx.remoteJid, ctx.messages, {
@@ -944,10 +946,10 @@ return connectPromise;
     // BotContactService.getGatingFlags).
     const gating = await BotContactService.getGatingFlags(userId, botContactJid);
 
-    // Blacklist: gana por encima de CUALQUIER otro switch (Responder a todos, bot habilitado,
-    // modo de respuesta, etc.) — un contacto en esta lista nunca recibe respuesta del bot, sin
-    // excepción. Por eso se chequea primero, antes que nada más.
-    if (gating.isBlacklisted) {
+    // Blacklist: bloquea en modo "Contactos/Grupos" (gana por encima del switch de ESE contacto
+    // puntual), pero NO cuando "Responder a todos" está activado — a pedido explícito del usuario,
+    // en ese modo el bot le responde a cualquiera sin excepción, blacklist incluida.
+    if (gating.isBlacklisted && !user?.botReplyToAll) {
       trace('SIN_RESPUESTA', { usuario: userId, cliente: phone, msgId: msg.key?.id, motivo: 'contacto en Blacklist' });
       return;
     }

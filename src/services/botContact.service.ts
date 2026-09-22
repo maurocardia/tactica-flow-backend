@@ -292,20 +292,26 @@ export class BotContactService {
     };
   }
 
-  /** El jid del cliente con el que ESTE asesor está en relay activo ahora mismo (ver
+  /** El cliente con el que ESTE asesor está en relay activo ahora mismo (ver
    * AdvisorService.handleAdvisorCommand) — un asesor atiende un cliente a la vez, así que alcanza
    * con la fila más reciente sin vencer. Normalmente hay a lo sumo una; si el bloque "Contactar
    * Asesor" del editor de flujos (modo fijo, no pasa por pickFreeAdvisor) llegó a reservarle un
-   * segundo cliente al mismo asesor, se toma la más nueva por prolijidad. */
-  static async getActiveClientForAdvisor(userId: number, advisorId: number): Promise<string | null> {
+   * segundo cliente al mismo asesor, se toma la más nueva por prolijidad. Devuelve nombre/vencimiento
+   * además del jid — para mostrar "Atendiendo a: Fulano" en el listado de asesores del panel (ver
+   * GET /advisors) sin una consulta aparte por fila. */
+  static async getActiveClientForAdvisor(
+    userId: number,
+    advisorId: number
+  ): Promise<{ jid: string; name: string; expiresAt: string } | null> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';
     const { rows } = await db.query(
-      `SELECT jid FROM bot_contacts
+      `SELECT jid, name, handoff_expires_at FROM bot_contacts
        WHERE user_id = $1 AND owner_jid = $2 AND handoff_advisor_id = $3 AND handoff_expires_at > now()
        ORDER BY handoff_started_at DESC LIMIT 1`,
       [userId, ownerJid, advisorId]
     );
-    return rows.length > 0 ? rows[0].jid : null;
+    if (rows.length === 0) return null;
+    return { jid: rows[0].jid, name: rows[0].name, expiresAt: new Date(rows[0].handoff_expires_at).toISOString() };
   }
 
   /** Corre hacia adelante el vencimiento de la reserva sin tocar handoff_advisor_id/

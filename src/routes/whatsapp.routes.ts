@@ -593,11 +593,37 @@ router.post('/transcribe-audio', async (req: Request, res: Response) => {
 // quién deriva el bot una conversación cuando decide que necesita intervención humana. Ver
 // AdvisorService para la selección equitativa (pickNextAdvisor); estos endpoints solo
 // administran el padrón (alta/edición/baja/reseteo de contadores).
+// Le suma a cada asesor el cliente que tiene en relay activo AHORA MISMO (si tiene uno) — para que
+// el panel pueda mostrar "Atendiendo a: Fulano" y habilitar/deshabilitar el botón "Liberar" sin
+// tener que abrir cada fila. N consultas chicas (una por asesor, listas de pocas filas) en vez de
+// una sola con JOIN: no vale la pena la complejidad para un endpoint que no es de uso masivo.
 router.get('/advisors', async (req: Request, res: Response) => {
   try {
-    res.json(await AdvisorService.list(req.user!.id));
+    const advisors = await AdvisorService.list(req.user!.id);
+    const withActiveClient = await Promise.all(
+      advisors.map(async (advisor) => ({
+        ...advisor,
+        activeClient: await BotContactService.getActiveClientForAdvisor(req.user!.id, advisor.id)
+      }))
+    );
+    res.json(withActiveClient);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al obtener los asesores' });
+  }
+});
+
+// Libera al cliente que este asesor tiene asignado ahora mismo — botón "Liberar" de la fila del
+// asesor en el panel (a diferencia de POST /bot-contacts/unpause y PUT /bot-contacts/:id/resume-bot,
+// que van por el contacto/chat; acá solo se conoce el asesor). Ver AdvisorService.releaseByAdvisorId.
+router.post('/advisors/:id/release', async (req: Request, res: Response) => {
+  try {
+    const result = await AdvisorService.releaseByAdvisorId(req.user!.id, Number(req.params.id));
+    if (result === 'no_active_reservation') {
+      return res.status(409).json({ error: 'Este asesor no tiene ningún cliente asignado ahora mismo' });
+    }
+    res.json({ released: true });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al liberar al asesor' });
   }
 });
 
