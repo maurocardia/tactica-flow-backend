@@ -1,4 +1,5 @@
 import { db } from '../config/db.js';
+import { looksLikePhoneDigits } from '../utils/whatsappIdentity.js';
 
 // Asesores humanos (panel: botón "Asesores" en ChatbotModule.tsx, AdvisorManagerModal.tsx) — a
 // quién deriva el bot una conversación cuando decide que necesita intervención de una persona.
@@ -207,7 +208,7 @@ export class AdvisorService {
 
     const message = [
       '🔔 *Derivación Automática*',
-      `📱 Cliente: ${customerName} (${customerPhone})`,
+      `📱 Cliente: ${customerName} (${looksLikePhoneDigits(customerPhone.replace(/[^0-9]/g, '')) ? customerPhone : 'número oculto — usuario de WhatsApp'})`,
       `📋 Resumen: ${summary}`,
       '💬 Respondé a este número para continuar la atención.',
     ].join('\n');

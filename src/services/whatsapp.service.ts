@@ -13,6 +13,7 @@ import { FlowMediaService } from './flowMedia.service.js';
 import { HandoffService } from './handoff.service.js';
 import { FlowEngineService } from './flowEngine.service.js';
 import { FlowOutboundMessage } from '../types/flow.js';
+import { looksLikePhoneDigits } from '../utils/whatsappIdentity.js';
 
 export type WhatsappConnectionStatus = 'disconnected' | 'connecting' | 'qr_ready' | 'connected';
 
@@ -61,6 +62,48 @@ const savedContactNames = new Map<number, Map<string, string>>();
 // para dar de alta una fila nueva en bot_contacts (ver WhatsappService.syncBotContacts) hace falta
 // el JID completo.
 const savedContactJids = new Map<number, Map<string, string>>();
+
+// Equivalencia @lid -> JID de teléfono (@s.whatsapp.net) por usuario, aprendida de los eventos de
+// contactos de Baileys (Contact trae `id` en un formato y `lid`/`jid` en el otro). WhatsApp a veces
+// etiqueta un mensaje entrante solo con el @lid (sin senderPn) — sin esta tabla, esa persona se
+// registraba en bot_contacts con un jid distinto del número real, así que un contacto importado
+// por teléfono (o con el bot activado a mano) nunca coincidía con quien de verdad escribía: el
+// panel mostraba una fila extra con un número "inventado" de 15 dígitos (el @lid) y el switch que
+// el usuario había prendido no aplicaba a esa fila.
+const lidToPhoneJid = new Map<number, Map<string, string>>();
+
+function rememberLidMapping(userId: number, lidJid: string | undefined, phoneJid: string | undefined) {
+  if (!lidJid || !phoneJid || !lidJid.endsWith('@lid') || !phoneJid.endsWith('@s.whatsapp.net')) return;
+  const map = lidToPhoneJid.get(userId) || new Map<string, string>();
+  map.set(lidJid.split('@')[0], phoneJid);
+  lidToPhoneJid.set(userId, map);
+  // También se guarda en bot_contacts.lid (si esa fila existe) para que sobreviva a reinicios.
+  BotContactService.setLid(userId, phoneJid, lidJid).catch(() => {});
+}
+
+/**
+ * Devuelve el JID de teléfono equivalente si `jid` es un @lid conocido (primero en memoria y, si no,
+ * en bot_contacts.lid — que se llena al importar/dar de alta por teléfono, ver resolveLids); si no
+ * se conoce, `jid` tal cual.
+ */
+async function toCanonicalJid(userId: number, jid: string): Promise<string> {
+  if (!jid.endsWith('@lid')) return jid;
+  const local = jid.split('@')[0];
+  const cached = lidToPhoneJid.get(userId)?.get(local);
+  if (cached) return cached;
+  try {
+    const phoneJid = await BotContactService.findPhoneJidByLid(userId, jid);
+    if (phoneJid) {
+      const map = lidToPhoneJid.get(userId) || new Map<string, string>();
+      map.set(local, phoneJid);
+      lidToPhoneJid.set(userId, map);
+      return phoneJid;
+    }
+  } catch (err) {
+    console.error('⚠️ [WhatsApp] No se pudo resolver el @lid contra bot_contacts:', err);
+  }
+  return jid;
+}
 
 function getSavedContactName(userId: number, jid: string | undefined): string | undefined {
   if (!jid) return undefined;
@@ -298,6 +341,31 @@ export class WhatsappService {
     return 'disconnected';
   }
 
+  /**
+   * Consulta a WhatsApp (onWhatsApp) el @lid de cada teléfono — así un contacto importado por número
+   * se puede reconocer cuando WhatsApp lo identifica solo por su @lid. Devuelve un mapa
+   * teléfono(dígitos) -> @lid; vacío si no hay sesión conectada o la consulta falla (best-effort).
+   */
+  static async resolveLids(userId: number, phones: string[]): Promise<Map<string, string>> {
+    const result = new Map<string, string>();
+    const session = sessions.get(userId);
+    if (!session || session.status !== 'connected' || phones.length === 0) return result;
+    const CHUNK = 50;
+    for (let i = 0; i < phones.length; i += CHUNK) {
+      const chunk = phones.slice(i, i + CHUNK);
+      try {
+        const found = await session.socket.onWhatsApp(...chunk.map((p) => `${p}@s.whatsapp.net`));
+        for (const r of found ?? []) {
+          const lid = (r as { lid?: string }).lid;
+          if (r.exists && lid) result.set(r.jid.split('@')[0], lid.endsWith('@lid') ? lid : `${lid}@lid`);
+        }
+      } catch (err) {
+        console.error('⚠️ [WhatsApp] No se pudieron resolver los @lid (onWhatsApp):', err);
+      }
+    }
+    return result;
+  }
+
   static getOwnerJid(userId: number): string | null {
     const session = sessions.get(userId);
     if (session?.socket?.user?.id) {
@@ -496,24 +564,34 @@ export class WhatsappService {
     // con lo que WhatsApp le vaya mandando de la agenda, aunque el history sync completo esté
     // apagado; puede tardar en poblarse o, para algunos contactos, no llegar nunca (WhatsApp no
     // siempre comparte el nombre guardado del otro lado).
-    const onContactNames = (contacts: { id: string; name?: string }[]) => {
+    const onContactNames = async (contacts: { id: string; lid?: string; jid?: string; name?: string }[]) => {
+      for (const c of contacts) {
+        // Aprende la equivalencia @lid <-> teléfono aunque el contacto no traiga nombre.
+        const phoneJid = c.id.endsWith('@s.whatsapp.net') ? c.id : c.jid;
+        const lidJid = c.id.endsWith('@lid') ? c.id : c.lid;
+        rememberLidMapping(userId, lidJid, phoneJid);
+      }
       for (const c of contacts) {
         if (c.name && !c.id.endsWith('@g.us')) {
+          // Si el id viene como @lid pero ya sabemos su teléfono, se siembra/actualiza la fila con
+          // el JID de teléfono (el que usa un contacto importado o dado de alta a mano).
+          const canonicalId = await toCanonicalJid(userId, c.id);
           setSavedContactName(userId, c.id, c.name);
+          if (canonicalId !== c.id) setSavedContactName(userId, canonicalId, c.name);
           ConversationService.updateNameIfKnown(c.id.split('@')[0], userId, c.name).catch((err: unknown) => {
             console.error(`⚠️ [WhatsApp] Error actualizando nombre guardado de ${c.id}:`, err);
           });
           // seedIfMissing en vez de solo actualizar el nombre: si es un contacto de la agenda que
           // todavía no escribió al bot, esto lo agrega a la lista igual (al fondo, por actividad —
           // ver comentario de seedIfMissing) en vez de esperar a que mande un mensaje real.
-          BotContactService.seedIfMissing(userId, c.id, c.name, false).catch((err: unknown) => {
+          BotContactService.seedIfMissing(userId, canonicalId, c.name, false).catch((err: unknown) => {
             console.error(`⚠️ [WhatsApp] Error agregando/actualizando en bot_contacts a ${c.id}:`, err);
           });
         }
       }
     };
     socket.ev.on('contacts.upsert', onContactNames);
-    socket.ev.on('contacts.update', (updates) => onContactNames(updates.filter((u): u is { id: string; name?: string } => !!u.id)));
+    socket.ev.on('contacts.update', (updates) => onContactNames(updates.filter((u): u is { id: string; lid?: string; jid?: string; name?: string } => !!u.id)));
 
     // "Sincronización rápida" (Issue: lista de contactos con orden/nombres desactualizados):
     // Baileys manda esto una sola vez apenas conecta (gracias a syncFullHistory arriba), con los
@@ -526,6 +604,9 @@ export class WhatsappService {
       (async () => {
         try {
           const nameByJid = new Map<string, string>();
+          for (const c of contacts) {
+            rememberLidMapping(userId, c.id?.endsWith('@lid') ? c.id : c.lid, c.id?.endsWith('@s.whatsapp.net') ? c.id : c.jid);
+          }
           for (const c of contacts) {
             if (c.id && c.name) {
               nameByJid.set(c.id, c.name);
@@ -635,10 +716,11 @@ return connectPromise;
     // misma persona real (confirmado: un solo contacto real llegó a tener 13 filas separadas).
     // Baileys ya resuelve el equivalente en formato de teléfono en `participantPn`/`senderPn`
     // cuando lo sabe — preferimos siempre esa forma canónica.
-    const participantJid: string | undefined = isGroup ? msg.key?.participantPn || msg.key?.participant : undefined;
+    const rawParticipantJid: string | undefined = isGroup ? msg.key?.participantPn || msg.key?.participant : undefined;
+    const participantJid: string | undefined = rawParticipantJid ? await toCanonicalJid(userId, rawParticipantJid) : undefined;
     if (isGroup && !participantJid && !fromMe) return;
 
-    const canonicalIndividualJid: string | undefined = !isGroup ? msg.key?.senderPn || remoteJid : undefined;
+    const canonicalIndividualJid: string | undefined = !isGroup ? msg.key?.senderPn || (await toCanonicalJid(userId, remoteJid)) : undefined;
     const senderJid = isGroup ? participantJid : canonicalIndividualJid;
 
     // Preferimos el nombre real guardado en la agenda (si Baileys ya lo sincronizó) por sobre el
@@ -867,7 +949,9 @@ return connectPromise;
     if (phone.includes('-') && phone.startsWith('120363')) return `${phone.split('-')[0]}@g.us`;
     if (phone.startsWith('120363')) return `${phone}@g.us`;
     const cleanPhone = phone.replace(/[^0-9]/g, '');
-    return `${cleanPhone}@s.whatsapp.net`;
+    // Un "teléfono" que no parece uno real (más de 13 dígitos) es el @lid de un usuario con número
+    // oculto — armarle @s.whatsapp.net apuntaba a un número inexistente.
+    return looksLikePhoneDigits(cleanPhone) ? `${cleanPhone}@s.whatsapp.net` : `${cleanPhone}@lid`;
   }
 
   static async sendTextMessage(phone: string, text: string, userId?: number): Promise<boolean> {

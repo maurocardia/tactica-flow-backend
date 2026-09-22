@@ -268,6 +268,13 @@ const SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS idx_bot_contacts_user_id ON bot_contacts(user_id, owner_jid, last_activity DESC);
 
+  -- Identificador @lid (anónimo) de WhatsApp para este contacto, cuando se conoce. WhatsApp a veces
+  -- manda los mensajes etiquetados solo con el @lid en vez del teléfono, y sin esto un contacto
+  -- importado/dado de alta por teléfono no coincidía con quien de verdad escribía (aparecía una fila
+  -- extra con un número de 15 dígitos). Ver WhatsappService.resolveLids / toCanonicalJid.
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS lid TEXT;
+  CREATE INDEX IF NOT EXISTS idx_bot_contacts_lid ON bot_contacts(user_id, lid);
+
   -- Blacklist (pestaña nueva junto a Contactos/Grupos en ContactBotSwitchesModal.tsx): un
   -- contacto acá NUNCA recibe respuesta del bot, sin importar "Responder a todos" ni ningún otro
   -- switch — ver el chequeo al principio de WhatsappService.handleIncomingMessage. Se reutiliza
