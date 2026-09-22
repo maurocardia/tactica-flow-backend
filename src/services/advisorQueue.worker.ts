@@ -8,7 +8,7 @@ let isProcessing = false;
 
 // Dos trabajos periódicos para el sistema de colas de asesores (ver comentario de advisor_queue
 // en db.ts):
-// 1) Avisarle a cada cliente en cola su posición actual, cada users.queue_reminder_minutes.
+// 1) Avisarle a cada cliente en cola su posición actual, cada users.queue_reminder_seconds.
 // 2) Promover al siguiente de la cola apenas un asesor queda libre — cubre el caso de un relay
 //    que se cerró SOLO por timeout de inactividad (sliding expiry) sin que el asesor escriba
 //    "FIN" (el cierre explícito ya promueve al instante, ver AdvisorService.finishAdvisory).

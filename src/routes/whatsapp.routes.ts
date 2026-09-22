@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import { WhatsappService } from '../services/whatsapp.service.js';
 import { AuthService, AiPromptSections, AiGeneralRules, BotMode } from '../services/auth.service.js';
-import { BotContactService } from '../services/botContact.service.js';
+import { BotContactService, UNLIMITED_RESERVATION_MINUTES } from '../services/botContact.service.js';
 import { AdvisorService } from '../services/advisor.service.js';
 import { FlowMediaService } from '../services/flowMedia.service.js';
 import { authMiddleware } from '../middleware/auth.middleware.js';
@@ -254,7 +254,9 @@ router.put('/bot-reply-delay', async (req: Request, res: Response) => {
 
 // Minutos que dura la reserva de un asesor antes de vencer sola (ver AdvisorService.
 // getReservationMinutes/DEFAULT_HANDOFF_RESERVATION_MINUTES) — configurable por cuenta.
-const HANDOFF_RESERVATION_MINUTES_MIN = 1;
+// UNLIMITED_RESERVATION_MINUTES (0) es válido a propósito: "sin límite", ver
+// BotContactService.reserveHandoffAdvisor.
+const HANDOFF_RESERVATION_MINUTES_MIN = UNLIMITED_RESERVATION_MINUTES;
 const HANDOFF_RESERVATION_MINUTES_MAX = 1440; // 24 horas: un límite más alto no tiene sentido práctico
 router.put('/handoff-reservation-minutes', async (req: Request, res: Response) => {
   const { minutes } = req.body;
@@ -265,7 +267,7 @@ router.put('/handoff-reservation-minutes', async (req: Request, res: Response) =
     minutes > HANDOFF_RESERVATION_MINUTES_MAX
   ) {
     return res.status(400).json({
-      error: `El campo "minutes" debe ser un entero entre ${HANDOFF_RESERVATION_MINUTES_MIN} y ${HANDOFF_RESERVATION_MINUTES_MAX}`
+      error: `El campo "minutes" debe ser un entero entre ${HANDOFF_RESERVATION_MINUTES_MIN} y ${HANDOFF_RESERVATION_MINUTES_MAX} (${UNLIMITED_RESERVATION_MINUTES} = sin límite)`
     });
   }
 
@@ -277,26 +279,27 @@ router.put('/handoff-reservation-minutes', async (req: Request, res: Response) =
   }
 });
 
-// Cada cuántos minutos un cliente en la cola de espera (sin asesor todavía) recibe un mensaje con
-// su posición actual — ver AdvisorQueueService/AdvisorQueueWorker.
-const QUEUE_REMINDER_MINUTES_MIN = 1;
-const QUEUE_REMINDER_MINUTES_MAX = 1440;
-router.put('/queue-reminder-minutes', async (req: Request, res: Response) => {
-  const { minutes } = req.body;
+// Cada cuántos segundos un cliente en la cola de espera (sin asesor todavía) recibe un mensaje con
+// su posición actual — ver AdvisorQueueService/AdvisorQueueWorker. En segundos (no minutos, como
+// antes) para poder configurar recordatorios de menos de un minuto.
+const QUEUE_REMINDER_SECONDS_MIN = 5;
+const QUEUE_REMINDER_SECONDS_MAX = 86400; // 24 horas
+router.put('/queue-reminder-seconds', async (req: Request, res: Response) => {
+  const { seconds } = req.body;
   if (
-    typeof minutes !== 'number' ||
-    !Number.isInteger(minutes) ||
-    minutes < QUEUE_REMINDER_MINUTES_MIN ||
-    minutes > QUEUE_REMINDER_MINUTES_MAX
+    typeof seconds !== 'number' ||
+    !Number.isInteger(seconds) ||
+    seconds < QUEUE_REMINDER_SECONDS_MIN ||
+    seconds > QUEUE_REMINDER_SECONDS_MAX
   ) {
     return res.status(400).json({
-      error: `El campo "minutes" debe ser un entero entre ${QUEUE_REMINDER_MINUTES_MIN} y ${QUEUE_REMINDER_MINUTES_MAX}`
+      error: `El campo "seconds" debe ser un entero entre ${QUEUE_REMINDER_SECONDS_MIN} y ${QUEUE_REMINDER_SECONDS_MAX}`
     });
   }
 
   try {
-    const user = await AuthService.setQueueReminderMinutes(req.user!.id, minutes);
-    res.json({ queueReminderMinutes: user?.queueReminderMinutes ?? minutes });
+    const user = await AuthService.setQueueReminderSeconds(req.user!.id, seconds);
+    res.json({ queueReminderSeconds: user?.queueReminderSeconds ?? seconds });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al actualizar el intervalo de recordatorio de la cola' });
   }
