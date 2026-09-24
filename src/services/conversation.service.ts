@@ -289,6 +289,19 @@ export class ConversationService {
     );
   }
 
+  /** Todas las conversaciones (una por participante) de un grupo, identificado por el prefijo de
+   * `phone` que usan (`${groupId}-${participante}`, ver WhatsappService.handleIncomingMessage) —
+   * para notas de sistema que apliquen a todo el grupo. Usado por AdvisorService.finishAdvisory
+   * para marcar "consulta resuelta" al cerrar una atención humana grupal. */
+  static async listByPhonePrefix(userId: number, prefix: string): Promise<Conversation[]> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query(
+      `SELECT * FROM conversations WHERE user_id = $1 AND owner_jid = $2 AND phone LIKE $3`,
+      [userId, ownerJid, `${prefix}-%`]
+    );
+    return rows.map(mapConversationRow);
+  }
+
   static async listByGroupName(groupName: string, userId: number): Promise<Conversation[]> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';
     const { rows } = await db.query(

@@ -189,16 +189,17 @@ export class AdvisorService {
   static readonly DEFAULT_FINISH_KEYWORDS = 'FIN,LISTO';
 
   /** Palabra(s) que el asesor escribe para cerrar la atención de ESTE usuario — lista separada por
-   * comas, normalizada a minúsculas y sin espacios (ver setAdvisorFinishKeywords en AuthService).
-   * Comparación exacta contra el texto completo trimeado (no substring) — igual que la regex fija
-   * de antes. */
+   * comas, sin tocar mayúsculas/minúsculas (ver setAdvisorFinishKeywords en AuthService). A pedido
+   * explícito del usuario, la comparación es ESTRICTA con mayúsculas/minúsculas — "Fin" no
+   * matchea si se configuró "FIN". Comparación exacta contra el texto completo trimeado (no
+   * substring). */
   static async getFinishKeywords(userId: number): Promise<string[]> {
     const { AuthService } = await import('./auth.service.js');
     const user = await AuthService.getUserById(userId);
     const raw = user?.advisorFinishKeywords || AdvisorService.DEFAULT_FINISH_KEYWORDS;
     return raw
       .split(',')
-      .map((k) => k.trim().toLowerCase())
+      .map((k) => k.trim())
       .filter((k) => k.length > 0);
   }
 
@@ -402,6 +403,37 @@ export class AdvisorService {
     }
   }
 
+  /**
+   * Agrega una nota de sistema ("consulta resuelta por un asesor humano") al historial que ve la
+   * IA de esta conversación — se llama al cerrar una atención (ver finishAdvisory) para que el
+   * pedido ORIGINAL que motivó la derivación (que la IA nunca llegó a contestar, se fue directo a
+   * un humano) no quede "pendiente" en el historial y dispare una nueva derivación automática la
+   * próxima vez que el cliente escriba cualquier cosa. Se guarda con sender='agent' (mismo trato
+   * que un mensaje de WhatsApp Web propio — ver ConversationService.toAiHistory: cuenta como turno
+   * del asistente, no del cliente).
+   *
+   * En un GRUPO (jid termina en @g.us) hay una fila de `conversations` POR PARTICIPANTE (ver
+   * WhatsappService.handleIncomingMessage) — se le agrega la nota a todas, no solo a quien pidió
+   * el asesor originalmente, porque cualquiera del grupo pudo haber sido quien preguntó.
+   */
+  static async markResolvedInHistory(userId: number, jid: string): Promise<void> {
+    const { ConversationService } = await import('./conversation.service.js');
+    const note = '✅ El asesor humano cerró esta consulta — quedó resuelta.';
+
+    if (jid.endsWith('@g.us')) {
+      const groupId = jid.split('@')[0];
+      const conversations = await ConversationService.listByPhonePrefix(userId, groupId);
+      for (const conv of conversations) {
+        await ConversationService.addMessage(conv.id, 'agent', note);
+      }
+      return;
+    }
+
+    const phone = jid.split('@')[0];
+    const conversation = await ConversationService.findOrCreateByPhone(phone, phone, userId, null);
+    await ConversationService.addMessage(conversation.id, 'agent', note);
+  }
+
   /** Le manda al CLIENTE el mensaje de seguimiento después de que se cierra la atención humana —
    * usado tanto por finishAdvisory como por la ruta PUT /bot-contacts/:id/resume-bot (que limpia
    * la reserva por id de fila en vez de por jid, ver clearHandoffPause). */
@@ -421,11 +453,19 @@ export class AdvisorService {
    * Si se pasa `expectedAdvisorId`, solo actúa cuando la reserva vigente es justo de ESE asesor —
    * evita que el comando "FIN" de un asesor cierre por error la atención de otro (ej. si escribe
    * mal el número del cliente y ese número resulta tener una reserva de un compañero).
+   *
+   * `skipFollowUp: true` omite el "¿Quedó resuelta tu consulta?" — lo usa handleCloseConfirmation
+   * cuando el cliente YA contestó que sí a esa misma pregunta (ver requestCloseConfirmation);
+   * mandarla de nuevo acá sería repetirle la misma pregunta que acaba de responder.
+   *
+   * Al asesor SIEMPRE se le avisa que se liberó su atención (antes solo pasaba en algunos
+   * caminos) — `advisorNotifyText` permite un texto más específico según por dónde se cerró (ej.
+   * "el cliente confirmó que se solucionó"); si no se pasa, usa uno genérico.
    */
   static async finishAdvisory(
     userId: number,
     jid: string,
-    opts?: { expectedAdvisorId?: number }
+    opts?: { expectedAdvisorId?: number; skipFollowUp?: boolean; advisorNotifyText?: string }
   ): Promise<'notified' | 'no_active_reservation' | 'mismatch'> {
     const { BotContactService } = await import('./botContact.service.js');
     const reservation = await BotContactService.getHandoffReservation(userId, jid);
@@ -441,10 +481,22 @@ export class AdvisorService {
     trace('ATENCION_CERRADA', { usuario: userId, cliente: jid, asesorId: reservation.advisorId, estabaActiva: active });
     if (!active) return 'no_active_reservation';
 
+    // Nota de sistema para que la IA no vuelva a derivar sola al toque: sin esto, el historial de
+    // la charla se quedaba con el pedido ORIGINAL sin resolver (la IA nunca llegó a contestarlo,
+    // se derivó directo a la persona) — así que el próximo mensaje del cliente (aunque fuera un
+    // simple "Hola") hacía que la IA viera ese pedido "todavía pendiente" y derivara de nuevo.
     try {
-      await AdvisorService.notifyCustomerFollowUp(userId, jid);
+      await AdvisorService.markResolvedInHistory(userId, jid);
     } catch (err) {
-      console.error('⚠️ [AdvisorService] No se pudo enviar el mensaje de seguimiento al cliente:', err);
+      console.error('⚠️ [AdvisorService] No se pudo marcar la consulta como resuelta en el historial:', err);
+    }
+
+    if (!opts?.skipFollowUp) {
+      try {
+        await AdvisorService.notifyCustomerFollowUp(userId, jid);
+      } catch (err) {
+        console.error('⚠️ [AdvisorService] No se pudo enviar el mensaje de seguimiento al cliente:', err);
+      }
     }
 
     // La IA sigue muda un rato más para este cliente si la cuenta configuró una pausa post-cierre
@@ -459,13 +511,22 @@ export class AdvisorService {
       }
     }
 
-    // Se acaba de liberar un cupo — si hay alguien esperando en la cola, se le asigna a ESTE
-    // asesor antes que a cualquiera (así el próximo handoffConversation no se lo lleva primero).
     if (reservation.advisorId) {
       await AdvisorService.markFreed(reservation.advisorId);
       try {
         const advisor = await AdvisorService.getById(userId, reservation.advisorId);
-        if (advisor) await AdvisorService.promoteNextFromQueue(userId, advisor);
+        if (advisor) {
+          // Avisarle al asesor ANTES de promoverlo a un cliente nuevo de la cola, para que el
+          // orden de mensajes tenga sentido ("se liberó" antes de "te asignamos otro").
+          try {
+            await AdvisorService.replyToAdvisor(userId, advisor, opts?.advisorNotifyText || 'Listo ✅ Se liberó tu atención con este cliente.');
+          } catch (err) {
+            console.error('⚠️ [AdvisorService] No se pudo avisarle al asesor que se liberó la atención:', err);
+          }
+          // Se acaba de liberar un cupo — si hay alguien esperando en la cola, se le asigna a
+          // ESTE asesor antes que a cualquiera (así el próximo handoffConversation no se lo lleva).
+          await AdvisorService.promoteNextFromQueue(userId, advisor);
+        }
       } catch (err) {
         console.error('⚠️ [AdvisorService] Error promoviendo el siguiente de la cola:', err);
       }
@@ -544,7 +605,15 @@ export class AdvisorService {
 
     if (AdvisorService.YES_WORDS.has(trimmed)) {
       trace('CIERRE_CONFIRMADO_SI', { usuario: userId, cliente: clientJid, asesor: advisor.name });
-      await AdvisorService.finishAdvisory(userId, clientJid, { expectedAdvisorId: advisor.id });
+      // skipFollowUp: el cliente ya contestó "sí" a "¿se solucionó tu consulta?" (ver
+      // requestCloseConfirmation) — mandarle notifyCustomerFollowUp acá le repetiría la misma
+      // pregunta que recién respondió. advisorNotifyText: el aviso al asesor que finishAdvisory
+      // manda solo — requestCloseConfirmation le había dicho "te aviso apenas responda".
+      await AdvisorService.finishAdvisory(userId, clientJid, {
+        expectedAdvisorId: advisor.id,
+        skipFollowUp: true,
+        advisorNotifyText: 'Listo ✅ El cliente confirmó que se solucionó — se liberó la atención.'
+      });
       return 'closed';
     }
 
@@ -599,7 +668,7 @@ export class AdvisorService {
     const activeClientJid = activeClient.jid;
     trace('ASESOR_RECONOCIDO', { usuario: userId, asesor: advisor.name, asesorTel: phone, cliente: activeClientJid });
 
-    const trimmed = text.trim().toLowerCase();
+    const trimmed = text.trim();
     const finishKeywords = await AdvisorService.getFinishKeywords(userId);
     if (finishKeywords.includes(trimmed)) {
       trace('ASESOR_FIN', { usuario: userId, asesor: advisor.name, cliente: activeClientJid });

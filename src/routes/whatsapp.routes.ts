@@ -686,7 +686,10 @@ router.post('/advisors', async (req: Request, res: Response) => {
 
   try {
     const advisor = await AdvisorService.create(req.user!.id, name.trim(), cleanPhone);
-    res.json(advisor);
+    // activeClient siempre null acá (recién se crea, no puede tener ningún relay activo todavía)
+    // — se agrega para que la forma coincida con GET /advisors, que sí lo trae (ver Advisor en el
+    // frontend: activeClient no es opcional).
+    res.json({ ...advisor, activeClient: null });
   } catch (error: any) {
     if (error?.code === '23505') {
       return res.status(409).json({ error: 'Ya existe un asesor con ese número de teléfono' });
@@ -723,7 +726,10 @@ router.put('/advisors/:id', async (req: Request, res: Response) => {
       isActive
     });
     if (!advisor) return res.status(404).json({ error: 'Asesor no encontrado' });
-    res.json(advisor);
+    // Misma razón que en POST /advisors: la forma tiene que coincidir con GET /advisors (activeClient
+    // no es opcional en el tipo del frontend).
+    const activeClient = await BotContactService.getActiveClientForAdvisor(req.user!.id, advisor.id);
+    res.json({ ...advisor, activeClient });
   } catch (error: any) {
     if (error?.code === '23505') {
       return res.status(409).json({ error: 'Ya existe un asesor con ese número de teléfono' });
