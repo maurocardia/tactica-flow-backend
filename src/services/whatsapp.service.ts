@@ -952,37 +952,64 @@ return connectPromise;
       return;
     }
 
-    // Relay: si este cliente tiene un asesor en relay activo (el asesor le escribió "FIN" todavía
-    // no — ver AdvisorService.handleAdvisorCommand, que reenvía los mensajes DEL asesor hacia
-    // acá), el mensaje se le pasa tal cual al asesor en vez de a la IA/flujo — mientras dura el
-    // relay, el asesor ES la respuesta (a diferencia de una reserva sin relay activo, que nunca
-    // bloqueó al bot). No aplica a grupos (los asesores atienden charlas 1 a 1). El mensaje ya
-    // quedó grabado en `conversations` arriba, así que el panel lo sigue viendo igual.
-    if (!isGroup) {
-      try {
-        const { AdvisorService } = await import('./advisor.service.js');
-        const activeAdvisor = await AdvisorService.getActiveHandoffAdvisor(userId, botContactJid);
-        if (activeAdvisor) {
-          trace('PUENTE_CLIENTE_A_ASESOR', {
-            usuario: userId,
-            cliente: phone,
-            asesor: activeAdvisor.name,
-            asesorTel: activeAdvisor.phone,
-            msgId: msg.key?.id,
-            texto: preview(text)
-          });
-          try {
-            await WhatsappService.sendTextMessage(activeAdvisor.phone, `🧑 *${plainContactName}:* ${text}`, userId, 'puente cliente→asesor');
-          } catch (err) {
-            console.error(`⚠️ [WhatsApp] No se pudo reenviar el mensaje del cliente al asesor "${activeAdvisor.name}":`, err);
-          }
-          const minutes = await AdvisorService.getRelayInactivityMinutes(userId);
-          await BotContactService.slideHandoffExpiry(userId, botContactJid, minutes);
-          return;
+    // Relay: si este cliente (o GRUPO — ver más abajo) tiene un asesor en relay activo (el asesor
+    // le escribió "FIN"/la palabra de cierre configurada todavía no — ver AdvisorService.
+    // handleAdvisorCommand, que reenvía los mensajes DEL asesor hacia acá), el mensaje se le pasa
+    // tal cual al asesor en vez de a la IA/flujo — mientras dura el relay, el asesor ES la
+    // respuesta (a diferencia de una reserva sin relay activo, que nunca bloqueó al bot). Un grupo
+    // entero se trata como "el cliente" (botContactJid ya es el jid del grupo): mientras el relay
+    // está activo, la IA/flujo tampoco responde para NADIE del grupo, y cada mensaje reenviado al
+    // asesor se rotula "[Grupo · Participante]" para que sepa quién escribió cada cosa — la
+    // respuesta del asesor siempre sale visible para TODO el grupo (no hay forma de apuntarle a
+    // una persona puntual, a pedido explícito del usuario). El mensaje ya quedó grabado en
+    // `conversations` arriba, así que el panel lo sigue viendo igual.
+    try {
+      const { AdvisorService } = await import('./advisor.service.js');
+      const activeAdvisor = await AdvisorService.getActiveHandoffAdvisor(userId, botContactJid);
+      if (activeAdvisor) {
+        // Si el asesor acaba de preguntar "¿se solucionó?" (palabra de cierre), este mensaje se
+        // interpreta primero como esa respuesta sí/no en vez de reenviarse tal cual — ver
+        // AdvisorService.requestCloseConfirmation/handleCloseConfirmation. Si el texto no matchea
+        // ni sí ni no ('ambiguous'), sigue de largo y se reenvía normal más abajo.
+        const closePending = await BotContactService.isClosePending(userId, botContactJid);
+        if (closePending) {
+          const outcome = await AdvisorService.handleCloseConfirmation(userId, botContactJid, text, activeAdvisor);
+          trace('CIERRE_CONFIRMACION_RESULTADO', { usuario: userId, cliente: phone, asesor: activeAdvisor.name, resultado: outcome });
+          if (outcome !== 'ambiguous') return;
         }
-      } catch (err) {
-        console.error('⚠️ [WhatsApp] Error chequeando relay de asesor activo:', err);
+
+        const relayLabel = isGroup ? `${groupName || 'Grupo'} · ${plainContactName}` : plainContactName;
+        trace('PUENTE_CLIENTE_A_ASESOR', {
+          usuario: userId,
+          cliente: phone,
+          asesor: activeAdvisor.name,
+          asesorTel: activeAdvisor.phone,
+          msgId: msg.key?.id,
+          texto: preview(text)
+        });
+        try {
+          await WhatsappService.sendTextMessage(activeAdvisor.phone, `🧑 *${relayLabel}:* ${text}`, userId, 'puente cliente→asesor');
+        } catch (err) {
+          console.error(`⚠️ [WhatsApp] No se pudo reenviar el mensaje del cliente al asesor "${activeAdvisor.name}":`, err);
+        }
+        const minutes = await AdvisorService.getRelayInactivityMinutes(userId);
+        await BotContactService.slideHandoffExpiry(userId, botContactJid, minutes);
+        return;
       }
+    } catch (err) {
+      console.error('⚠️ [WhatsApp] Error chequeando relay de asesor activo:', err);
+    }
+
+    // Pausa de IA post-cierre (ver AdvisorService.getAiPauseAfterCloseMinutes/finishAdvisory): la
+    // atención humana ya terminó, pero la cuenta configuró que la IA se quede muda un rato más
+    // para este cliente/grupo antes de reactivarse sola.
+    try {
+      if (await BotContactService.isAiPaused(userId, botContactJid)) {
+        trace('SIN_RESPUESTA', { usuario: userId, cliente: phone, msgId: msg.key?.id, motivo: 'IA pausada post-atención humana' });
+        return;
+      }
+    } catch (err) {
+      console.error('⚠️ [WhatsApp] Error chequeando pausa de IA post-cierre:', err);
     }
 
     if (!user?.botEnabled) {
