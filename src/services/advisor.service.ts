@@ -436,29 +436,37 @@ export class AdvisorService {
     await ConversationService.addMessage(conversation.id, 'agent', note);
   }
 
-  /** Le manda al CLIENTE el mensaje de seguimiento después de que se cierra la atención humana —
-   * usado tanto por finishAdvisory como por la ruta PUT /bot-contacts/:id/resume-bot (que limpia
-   * la reserva por id de fila en vez de por jid, ver clearHandoffPause). */
-  static async notifyCustomerFollowUp(userId: number, jid: string): Promise<void> {
+  /** Le avisa al CLIENTE (o al grupo) que el asesor se fue y ya no está en la conversación — para
+   * las liberaciones MANUALES (botón del panel), donde el asesor no cerró con la palabra de cierre
+   * ni el cliente confirmó nada. Antes ahí se le mandaba "¿Quedó resuelta tu consulta?", que no
+   * tiene sentido si el asesor simplemente se retiró. Usado por finishAdvisory y por la ruta PUT
+   * /bot-contacts/:id/resume-bot (que limpia la reserva por id de fila en vez de por jid, ver
+   * clearHandoffPause). */
+  static async notifyCustomerAdvisorLeft(userId: number, jid: string): Promise<void> {
     const { WhatsappService } = await import('./whatsapp.service.js');
-    await WhatsappService.sendTextMessage(jid.split('@')[0], '¿Quedó resuelta tu consulta? Contame si necesitás algo más 🙂', userId, 'seguimiento→cliente');
+    await WhatsappService.sendTextMessage(
+      jid.split('@')[0],
+      'El asesor se ha retirado y ya no está en esta conversación. Si necesitás algo más, contame 🙂',
+      userId,
+      'asesor se fue→cliente'
+    );
   }
 
   /**
    * Cierra la atención humana de esta conversación: libera la reserva (bot_contacts.
    * handoff_advisor_id/handoff_expires_at) para que un próximo pedido de asesor pueda asignar a
-   * cualquiera sin esperar los 30 minutos, y si HABÍA una reserva vigente le pregunta al cliente
-   * si quedó resuelta su consulta. Usado por el botón "Finalizar atención" del panel (POST
-   * /bot-contacts/unpause) y por el comando "FIN" que el asesor manda por WhatsApp (ver
-   * handleAdvisorCommand más abajo).
+   * cualquiera sin esperar los 30 minutos, y si HABÍA una reserva vigente le avisa al cliente que
+   * el asesor se fue (liberación manual). Usado por los botones de liberar del panel (POST
+   * /bot-contacts/unpause, POST /advisors/:id/release) y, con `skipFollowUp`, por el cierre
+   * confirmado por el cliente (ver handleCloseConfirmation).
    *
    * Si se pasa `expectedAdvisorId`, solo actúa cuando la reserva vigente es justo de ESE asesor —
    * evita que el comando "FIN" de un asesor cierre por error la atención de otro (ej. si escribe
    * mal el número del cliente y ese número resulta tener una reserva de un compañero).
    *
-   * `skipFollowUp: true` omite el "¿Quedó resuelta tu consulta?" — lo usa handleCloseConfirmation
-   * cuando el cliente YA contestó que sí a esa misma pregunta (ver requestCloseConfirmation);
-   * mandarla de nuevo acá sería repetirle la misma pregunta que acaba de responder.
+   * `skipFollowUp: true` omite el aviso al cliente — lo usa handleCloseConfirmation cuando el
+   * cliente YA contestó que sí a "¿se solucionó tu consulta?" (ver requestCloseConfirmation): ya
+   * sabe cómo terminó la atención, no hace falta avisarle nada más.
    *
    * Al asesor SIEMPRE se le avisa que se liberó su atención (antes solo pasaba en algunos
    * caminos) — `advisorNotifyText` permite un texto más específico según por dónde se cerró (ej.
@@ -495,9 +503,9 @@ export class AdvisorService {
 
     if (!opts?.skipFollowUp) {
       try {
-        await AdvisorService.notifyCustomerFollowUp(userId, jid);
+        await AdvisorService.notifyCustomerAdvisorLeft(userId, jid);
       } catch (err) {
-        console.error('⚠️ [AdvisorService] No se pudo enviar el mensaje de seguimiento al cliente:', err);
+        console.error('⚠️ [AdvisorService] No se pudo avisarle al cliente que el asesor se fue:', err);
       }
     }
 
@@ -608,8 +616,8 @@ export class AdvisorService {
     if (AdvisorService.YES_WORDS.has(trimmed)) {
       trace('CIERRE_CONFIRMADO_SI', { usuario: userId, cliente: clientJid, asesor: advisor.name });
       // skipFollowUp: el cliente ya contestó "sí" a "¿se solucionó tu consulta?" (ver
-      // requestCloseConfirmation) — mandarle notifyCustomerFollowUp acá le repetiría la misma
-      // pregunta que recién respondió. advisorNotifyText: el aviso al asesor que finishAdvisory
+      // requestCloseConfirmation) — avisarle acá que el asesor se fue (notifyCustomerAdvisorLeft)
+      // sobra: ya sabe cómo terminó la atención. advisorNotifyText: el aviso al asesor que finishAdvisory
       // manda solo — requestCloseConfirmation le había dicho "te aviso apenas responda".
       await AdvisorService.finishAdvisory(userId, clientJid, {
         expectedAdvisorId: advisor.id,

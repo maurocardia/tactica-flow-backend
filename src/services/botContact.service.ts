@@ -262,8 +262,8 @@ export class BotContactService {
   /** Botón "Liberar asesor" del panel — misma decisión que releaseHandoffReservationByJid, pero
    * direccionado por el id de fila (lo que el panel tiene a mano) en vez del jid. Devuelve también
    * si HABÍA una reserva vigente antes de limpiarla (con el CTE "prev", capturado antes del
-   * UPDATE) — la ruta lo usa para decidir si le manda al cliente el mensaje de seguimiento
-   * ("¿quedó resuelta tu consulta?", ver AdvisorService.notifyCustomerFollowUp). */
+   * UPDATE) — la ruta lo usa para decidir si le avisa al cliente que el asesor se fue
+   * (ver AdvisorService.notifyCustomerAdvisorLeft). */
   static async clearHandoffPause(id: number): Promise<{ contact: BotContact; hadActiveReservation: boolean } | null> {
     const { rows } = await db.query(
       `WITH prev AS (SELECT handoff_advisor_id, handoff_expires_at FROM bot_contacts WHERE id = $1)
