@@ -77,6 +77,61 @@ export interface RelayOrigin {
 const relayOrigins = new Map<string, RelayOrigin>();
 const MAX_RELAY_ORIGINS = 3000;
 
+// Archivos (imagen / video / documento / nota de voz / sticker) que pasan por el puente. Antes
+// handleIncomingMessage descartaba todo mensaje sin texto, así que un archivo nunca llegaba al
+// otro lado, en ninguno de los dos sentidos.
+export type RelayMediaKind = 'image' | 'video' | 'document' | 'audio' | 'sticker';
+export interface RelayMedia {
+  kind: RelayMediaKind;
+  /** El mensaje original completo (hace falta para poder descargar el archivo). */
+  msg: WAMessage;
+  /** Texto que el remitente le puso al archivo (vacío si no puso ninguno o no admite). */
+  caption: string;
+  fileName?: string;
+}
+
+/** El contextInfo del mensaje (donde viene el mensaje citado) — vive en un lugar distinto según el
+ * tipo de mensaje: texto (extendedTextMessage), imagen, video, documento, audio, sticker. */
+export function getMessageContextInfo(message: proto.IMessage | null | undefined): proto.IContextInfo | undefined {
+  if (!message) return undefined;
+  const holder =
+    message.extendedTextMessage ||
+    message.imageMessage ||
+    message.videoMessage ||
+    message.documentMessage ||
+    message.documentWithCaptionMessage?.message?.documentMessage ||
+    message.audioMessage ||
+    message.stickerMessage;
+  return holder?.contextInfo ?? undefined;
+}
+
+export function detectRelayMedia(msg: WAMessage): RelayMedia | undefined {
+  const m = msg.message;
+  if (!m) return undefined;
+  const doc = m.documentMessage || m.documentWithCaptionMessage?.message?.documentMessage;
+  if (m.imageMessage) return { kind: 'image', msg, caption: m.imageMessage.caption || '' };
+  if (m.videoMessage) return { kind: 'video', msg, caption: m.videoMessage.caption || '' };
+  if (doc) return { kind: 'document', msg, caption: doc.caption || '', fileName: doc.fileName || undefined };
+  if (m.audioMessage) return { kind: 'audio', msg, caption: '' };
+  if (m.stickerMessage) return { kind: 'sticker', msg, caption: '' };
+  return undefined;
+}
+
+const MEDIA_PLACEHOLDER: Record<RelayMediaKind, string> = {
+  image: '[🖼️ Imagen]',
+  video: '[🎬 Video]',
+  document: '[📄 Documento]',
+  audio: '[🎙️ Nota de voz]',
+  sticker: '[🏷️ Sticker]'
+};
+
+/** Texto que representa al archivo en el historial de la conversación / trazas (el mensaje real no
+ * tiene texto). */
+function mediaPlaceholder(media: RelayMedia): string {
+  const base = media.kind === 'document' && media.fileName ? `[📄 Documento: ${media.fileName}]` : MEDIA_PLACEHOLDER[media.kind];
+  return media.caption ? `${base} ${media.caption}` : base;
+}
+
 function rememberRelayOrigin(userId: number, bridgeMsgId: string | null | undefined, origin: RelayOrigin) {
   if (!bridgeMsgId) return;
   const key = `${userId}:${bridgeMsgId}`;
@@ -888,6 +943,12 @@ return connectPromise;
       }
     }
 
+    // Imagen / video / documento / sticker (o un audio, además de transcribirlo): mensajes que antes
+    // se descartaban acá por no tener texto. Ahora siguen de largo — con un texto que los representa
+    // en el historial — para poder pasar por el puente. Sin una atención humana activa se siguen
+    // ignorando después (ver más abajo), igual que antes.
+    const relayMedia = detectRelayMedia(msg as WAMessage);
+    if (!text && relayMedia) text = mediaPlaceholder(relayMedia);
     if (!text) return;
 
     // WhatsApp a veces etiqueta el mismo mensaje con un identificador "@lid" (linked ID) en vez
@@ -949,9 +1010,9 @@ return connectPromise;
       try {
         const { AdvisorService } = await import('./advisor.service.js');
         // Si el asesor deslizó para responderle a un mensaje del puente, viene el id de ESE mensaje.
-        const quotedMsgId = msg.message?.extendedTextMessage?.contextInfo?.stanzaId ?? undefined;
+        const quotedMsgId = getMessageContextInfo(msg.message)?.stanzaId ?? undefined;
         const advisorMsg = msg.key && msg.message ? { key: msg.key, message: msg.message } : undefined;
-        if (await AdvisorService.handleAdvisorCommand(userId, phone, text, quotedMsgId, advisorMsg)) return;
+        if (await AdvisorService.handleAdvisorCommand(userId, phone, text, quotedMsgId, advisorMsg, relayMedia)) return;
       } catch (err) {
         console.error('⚠️ [WhatsApp] Error procesando comando de asesor:', err);
       }
@@ -1048,7 +1109,7 @@ return connectPromise;
         // Si quien escribió deslizó para responderle a un mensaje del asesor, el reenvío sale
         // citando ESE mensaje en el chat puente. Si ya no se recuerda (reinicio del backend, o citó
         // otra cosa), se antepone el texto citado para que el asesor igual tenga el contexto.
-        const clientContext = msg.message?.extendedTextMessage?.contextInfo;
+        const clientContext = getMessageContextInfo(msg.message);
         const advisorOrigin = WhatsappService.getAdvisorMessageOrigin(userId, clientContext?.stanzaId);
         const usableAdvisorOrigin =
           advisorOrigin && advisorOrigin.advisorPhone.replace(/[^0-9]/g, '') === activeAdvisor.phone.replace(/[^0-9]/g, '')
@@ -1065,19 +1126,33 @@ return connectPromise;
           contexto_texto: !usableAdvisorOrigin && quotedText ? true : undefined
         });
         try {
-          const bridgeMsgId = await WhatsappService.sendTextMessageWithId(
-            activeAdvisor.phone,
-            `${contextPrefix}🧑 *${relayLabel}*\n${text}`,
-            userId,
-            'puente cliente→asesor',
-            usableAdvisorOrigin ? { quoted: usableAdvisorOrigin.quoted } : undefined
-          );
+          // Un archivo se reenvía como archivo (no como el texto que lo representa en el historial).
+          const bridgeMsgIds = relayMedia
+            ? await WhatsappService.sendRelayMedia(
+                userId,
+                activeAdvisor.phone,
+                relayMedia,
+                `${contextPrefix}🧑 *${relayLabel}*`,
+                'puente cliente→asesor',
+                usableAdvisorOrigin ? { quoted: usableAdvisorOrigin.quoted } : undefined
+              )
+            : [
+                await WhatsappService.sendTextMessageWithId(
+                  activeAdvisor.phone,
+                  `${contextPrefix}🧑 *${relayLabel}*\n${text}`,
+                  userId,
+                  'puente cliente→asesor',
+                  usableAdvisorOrigin ? { quoted: usableAdvisorOrigin.quoted } : undefined
+                )
+              ];
           if (msg.key && msg.message) {
-            WhatsappService.rememberRelayOrigin(userId, bridgeMsgId, {
-              targetJid: botContactJid,
-              quoted: { key: msg.key, message: msg.message },
-              participantJid: isGroup ? participantJid : undefined
-            });
+            for (const bridgeMsgId of bridgeMsgIds) {
+              WhatsappService.rememberRelayOrigin(userId, bridgeMsgId, {
+                targetJid: botContactJid,
+                quoted: { key: msg.key, message: msg.message },
+                participantJid: isGroup ? participantJid : undefined
+              });
+            }
           }
         } catch (err) {
           console.error(`⚠️ [WhatsApp] No se pudo reenviar el mensaje del cliente al asesor "${activeAdvisor.name}":`, err);
@@ -1088,6 +1163,13 @@ return connectPromise;
       }
     } catch (err) {
       console.error('⚠️ [WhatsApp] Error chequeando relay de asesor activo:', err);
+    }
+
+    // Archivo sin una atención humana activa: se ignora como siempre (el bot no interpreta imágenes,
+    // videos, documentos ni stickers). Un audio sigue de largo porque ya viene transcripto a texto.
+    if (relayMedia && relayMedia.kind !== 'audio') {
+      trace('SIN_RESPUESTA', { usuario: userId, cliente: phone, msgId: msg.key?.id, motivo: `archivo (${relayMedia.kind}) sin atención humana activa` });
+      return;
     }
 
     // Pausa de IA post-cierre (ver AdvisorService.getAiPauseAfterCloseMinutes/finishAdvisory): la
@@ -1311,6 +1393,89 @@ return connectPromise;
       opts?.quoted ? { quoted: opts.quoted as unknown as WAMessage } : undefined
     );
     return sent?.key?.id ?? undefined;
+  }
+
+  /**
+   * Reenvía un archivo (imagen / video / documento / nota de voz / sticker) por el puente: lo
+   * descarga del mensaje original y lo vuelve a subir a `phone`, con `label` (el nombre de quien
+   * lo mandó, en su propia línea) como encabezado del texto que lo acompaña. Imagen, video y
+   * documento llevan el rótulo en su propio pie de foto; nota de voz y sticker no admiten pie de
+   * foto, así que el rótulo va en un mensaje de texto justo antes. Devuelve los ids de los mensajes
+   * enviados (para recordar su origen, ver rememberRelayOrigin). Si el archivo no se puede
+   * descargar (ya no está en los servidores de WhatsApp, por ejemplo), avisa por texto en vez de
+   * perder el mensaje en silencio.
+   */
+  static async sendRelayMedia(
+    userId: number,
+    phone: string,
+    media: RelayMedia,
+    label: string,
+    route: string,
+    opts?: { quoted?: RelayOrigin['quoted']; mentions?: string[] }
+  ): Promise<string[]> {
+    const session = sessions.get(userId);
+    const jid = this.phoneToJid(phone);
+    if (!session || session.status !== 'connected') {
+      trace('ENVIO_SIN_SESION', { ruta: route, para: jid, usuario: userId, estado: session?.status || 'sin sesión' });
+      throw new Error('No hay una sesión de WhatsApp conectada para enviar el archivo.');
+    }
+
+    const socket = session.socket;
+    const quotedOpt = opts?.quoted ? { quoted: opts.quoted as unknown as WAMessage } : undefined;
+    const mentionsPart = opts?.mentions?.length ? { mentions: opts.mentions } : {};
+    const asContent = (c: object) => c as unknown as Parameters<WASocket['sendMessage']>[1];
+    const ids: string[] = [];
+    const track = (sent: { key?: { id?: string | null } } | undefined) => {
+      if (sent?.key?.id) ids.push(sent.key.id);
+    };
+
+    let buffer: Buffer;
+    try {
+      buffer = (await downloadMediaMessage(media.msg, 'buffer', {})) as Buffer;
+      if (!buffer || buffer.length === 0) throw new Error('archivo vacío');
+    } catch (err) {
+      trace('MEDIA_DESCARGA_ERROR', { usuario: userId, tipo: media.kind, msgId: media.msg.key?.id, error: (err as Error)?.message });
+      track(await sendWithRetry(socket, jid, asContent({ text: `${label}\n[📎 No se pudo reenviar el archivo (${media.kind})]`, ...mentionsPart }), route, quotedOpt));
+      return ids;
+    }
+
+    const m = media.msg.message!;
+    const captionText = media.caption ? `${label}\n${media.caption}` : label;
+    trace('MEDIA_REENVIO', { usuario: userId, tipo: media.kind, para: jid, bytes: buffer.length, ruta: route });
+
+    if (media.kind === 'image') {
+      track(await sendWithRetry(socket, jid, asContent({ image: buffer, caption: captionText, ...mentionsPart }), route, quotedOpt));
+    } else if (media.kind === 'video') {
+      track(
+        await sendWithRetry(
+          socket,
+          jid,
+          asContent({ video: buffer, caption: captionText, gifPlayback: m.videoMessage?.gifPlayback ?? undefined, mimetype: m.videoMessage?.mimetype ?? undefined, ...mentionsPart }),
+          route,
+          quotedOpt
+        )
+      );
+    } else if (media.kind === 'document') {
+      const doc = m.documentMessage || m.documentWithCaptionMessage?.message?.documentMessage;
+      track(
+        await sendWithRetry(
+          socket,
+          jid,
+          asContent({ document: buffer, mimetype: doc?.mimetype || 'application/octet-stream', fileName: doc?.fileName || 'archivo', caption: captionText, ...mentionsPart }),
+          route,
+          quotedOpt
+        )
+      );
+    } else {
+      // Nota de voz / sticker: no admiten pie de foto — el rótulo va en un texto aparte, antes.
+      track(await sendWithRetry(socket, jid, asContent({ text: label, ...mentionsPart }), route, quotedOpt));
+      if (media.kind === 'audio') {
+        track(await sendWithRetry(socket, jid, asContent({ audio: buffer, ptt: m.audioMessage?.ptt ?? false, mimetype: m.audioMessage?.mimetype || 'audio/ogg; codecs=opus' }), route));
+      } else {
+        track(await sendWithRetry(socket, jid, asContent({ sticker: buffer }), route));
+      }
+    }
+    return ids;
   }
 
   /** Guarda de qué mensaje original viene el mensaje del puente `bridgeMsgId` (ver RelayOrigin). */
