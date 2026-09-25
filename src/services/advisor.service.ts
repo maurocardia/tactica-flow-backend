@@ -710,7 +710,7 @@ export class AdvisorService {
     try {
       const sentToClientId = await WhatsappService.sendTextMessageWithId(
         activeClientJid.split('@')[0],
-        `${mentionTag}👨‍💼 *${advisor.name}:* ${text}`,
+        `${mentionTag}👨‍💼 *${advisor.name}*\n${text}`,
         userId,
         'puente asesor→cliente',
         usableOrigin ? { quoted: usableOrigin.quoted, mentions: mention ? [mention] : undefined } : undefined

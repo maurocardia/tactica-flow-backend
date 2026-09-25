@@ -1067,7 +1067,7 @@ return connectPromise;
         try {
           const bridgeMsgId = await WhatsappService.sendTextMessageWithId(
             activeAdvisor.phone,
-            `${contextPrefix}🧑 *${relayLabel}:* ${text}`,
+            `${contextPrefix}🧑 *${relayLabel}*\n${text}`,
             userId,
             'puente cliente→asesor',
             usableAdvisorOrigin ? { quoted: usableAdvisorOrigin.quoted } : undefined
