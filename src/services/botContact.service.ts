@@ -278,6 +278,12 @@ export class BotContactService {
     return { contact: mapRow(row), hadActiveReservation };
   }
 
+  /** Un contacto por el id de fila (lo que el panel tiene a mano). null si no existe. */
+  static async getById(id: number): Promise<BotContact | null> {
+    const { rows } = await db.query('SELECT * FROM bot_contacts WHERE id = $1', [id]);
+    return rows.length > 0 ? mapRow(rows[0]) : null;
+  }
+
   /** Para AdvisorService.getActiveHandoffAdvisor: a quién está reservada esta conversación ahora
    * mismo, y hasta cuándo. null/expirado = sin reserva activa. */
   static async getHandoffReservation(userId: number, jid: string): Promise<{ advisorId: number | null; expiresAt: Date | null }> {

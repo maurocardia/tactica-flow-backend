@@ -517,17 +517,22 @@ router.post('/bot-contacts/unpause', async (req: Request, res: Response) => {
   }
 });
 
-// Libera la reserva de asesor de un contacto — botón "Liberar asesor" del panel.
+// Libera la reserva de asesor de un contacto — botón "Liberar asesor" de la lista de Contactos del
+// panel. Va por AdvisorService.finishAdvisory igual que POST /bot-contacts/unpause y POST
+// /advisors/:id/release: antes acá solo se limpiaba la reserva y se avisaba al cliente, sin
+// avisarle al asesor, sin pasar al siguiente de la cola, sin pausar la IA ni dejar la nota de
+// "consulta resuelta" — así que el mismo botón se comportaba distinto según desde dónde se tocara.
 router.put('/bot-contacts/:id/resume-bot', async (req: Request, res: Response) => {
   try {
-    const result = await BotContactService.clearHandoffPause(Number(req.params.id));
-    if (!result) return res.status(404).json({ error: 'Contacto no encontrado' });
-    if (result.hadActiveReservation) {
-      AdvisorService.notifyCustomerAdvisorLeft(result.contact.userId, result.contact.jid).catch((err) => {
-        console.error('⚠️ [whatsapp.routes] No se pudo avisarle al cliente que el asesor se fue tras liberarlo:', err);
-      });
-    }
-    res.json(result.contact);
+    const contact = await BotContactService.getById(Number(req.params.id));
+    // Un contacto de otra cuenta se trata como inexistente (antes cualquier usuario autenticado
+    // podía liberar el contacto de otro solo con conocer su id).
+    if (!contact || contact.userId !== req.user!.id) return res.status(404).json({ error: 'Contacto no encontrado' });
+
+    await AdvisorService.finishAdvisory(req.user!.id, contact.jid);
+    io.emit('bot_contact_updated', { jid: contact.jid, handoffExpiresAt: null });
+
+    res.json((await BotContactService.getById(contact.id)) ?? contact);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al liberar la reserva de asesor de este contacto' });
   }
