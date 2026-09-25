@@ -1,4 +1,4 @@
-import { makeWASocket, makeCacheableSignalKeyStore, DisconnectReason, downloadMediaMessage, jidNormalizedUser, proto, type WASocket } from '@whiskeysockets/baileys';
+import { makeWASocket, makeCacheableSignalKeyStore, DisconnectReason, downloadMediaMessage, jidNormalizedUser, proto, type WASocket, type WAMessage } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode';
 import { io } from '../server.js';
 import { db } from '../config/db.js';
@@ -56,6 +56,35 @@ function rememberMessageContent(userId: number, msgId: string | null | undefined
   if (recentMessageContent.size > MAX_RECENT_MESSAGES) {
     const oldest = recentMessageContent.keys().next().value;
     if (oldest !== undefined) recentMessageContent.delete(oldest);
+  }
+}
+
+// Puente cliente/grupo → asesor: por cada mensaje que el bot le reenvía al asesor, recuerda cuál
+// fue el mensaje ORIGINAL del cliente (o de la persona del grupo). Así, cuando el asesor desliza
+// para responderle a ESE mensaje del puente, su respuesta sale citando el mensaje original —
+// y en un grupo, mencionando a quien lo escribió — en vez de quedar citada solo en el chat del
+// puente, donde el destinatario final no la ve. En memoria por proceso, con tope (la cita solo
+// hace falta mientras dura la charla; si se reinicia el backend en el medio, la respuesta sale
+// igual pero sin cita). Ver AdvisorService.handleAdvisorCommand.
+export interface RelayOrigin {
+  /** JID de la conversación a la que hay que responder (el cliente, o el JID del grupo). */
+  targetJid: string;
+  /** Mensaje original (key + contenido) que se cita en la respuesta. */
+  quoted: { key: proto.IMessageKey; message: proto.IMessage };
+  /** Solo grupos: quién escribió el mensaje original (para mencionarlo). */
+  participantJid?: string;
+}
+const relayOrigins = new Map<string, RelayOrigin>();
+const MAX_RELAY_ORIGINS = 3000;
+
+function rememberRelayOrigin(userId: number, bridgeMsgId: string | null | undefined, origin: RelayOrigin) {
+  if (!bridgeMsgId) return;
+  const key = `${userId}:${bridgeMsgId}`;
+  relayOrigins.delete(key);
+  relayOrigins.set(key, origin);
+  if (relayOrigins.size > MAX_RELAY_ORIGINS) {
+    const oldest = relayOrigins.keys().next().value;
+    if (oldest !== undefined) relayOrigins.delete(oldest);
   }
 }
 
@@ -201,14 +230,15 @@ async function sendWithRetry(
   jid: string,
   content: Parameters<WASocket['sendMessage']>[1],
   route = 'bot→cliente',
+  options?: Parameters<WASocket['sendMessage']>[2],
   maxRetries = 2
-): Promise<void> {
+): Promise<Awaited<ReturnType<WASocket['sendMessage']>>> {
   for (let attempt = 0; ; attempt++) {
     try {
-      const sent = await socket.sendMessage(jid, content);
+      const sent = await socket.sendMessage(jid, content, options);
       rememberRoute(sent?.key?.id, route);
-      trace('ENVIO_OK', { ruta: route, para: jid, msgId: sent?.key?.id, intento: attempt + 1 });
-      return;
+      trace('ENVIO_OK', { ruta: route, para: jid, msgId: sent?.key?.id, intento: attempt + 1, citando: options?.quoted ? true : undefined });
+      return sent;
     } catch (error) {
       if (attempt < maxRetries && isTransientSendError(error)) {
         const delayMs = 2000 * (attempt + 1);
@@ -893,7 +923,9 @@ return connectPromise;
     if (!isGroup && !fromMe) {
       try {
         const { AdvisorService } = await import('./advisor.service.js');
-        if (await AdvisorService.handleAdvisorCommand(userId, phone, text)) return;
+        // Si el asesor deslizó para responderle a un mensaje del puente, viene el id de ESE mensaje.
+        const quotedMsgId = msg.message?.extendedTextMessage?.contextInfo?.stanzaId ?? undefined;
+        if (await AdvisorService.handleAdvisorCommand(userId, phone, text, quotedMsgId)) return;
       } catch (err) {
         console.error('⚠️ [WhatsApp] Error procesando comando de asesor:', err);
       }
@@ -988,7 +1020,19 @@ return connectPromise;
           texto: preview(text)
         });
         try {
-          await WhatsappService.sendTextMessage(activeAdvisor.phone, `🧑 *${relayLabel}:* ${text}`, userId, 'puente cliente→asesor');
+          const bridgeMsgId = await WhatsappService.sendTextMessageWithId(
+            activeAdvisor.phone,
+            `🧑 *${relayLabel}:* ${text}`,
+            userId,
+            'puente cliente→asesor'
+          );
+          if (msg.key && msg.message) {
+            WhatsappService.rememberRelayOrigin(userId, bridgeMsgId, {
+              targetJid: botContactJid,
+              quoted: { key: msg.key, message: msg.message },
+              participantJid: isGroup ? participantJid : undefined
+            });
+          }
         } catch (err) {
           console.error(`⚠️ [WhatsApp] No se pudo reenviar el mensaje del cliente al asesor "${activeAdvisor.name}":`, err);
         }
@@ -1175,7 +1219,26 @@ return connectPromise;
     return looksLikePhoneDigits(cleanPhone) ? `${cleanPhone}@s.whatsapp.net` : `${cleanPhone}@lid`;
   }
 
-  static async sendTextMessage(phone: string, text: string, userId?: number, route = 'mensaje'): Promise<boolean> {
+  static async sendTextMessage(
+    phone: string,
+    text: string,
+    userId?: number,
+    route = 'mensaje',
+    opts?: { quoted?: RelayOrigin['quoted']; mentions?: string[] }
+  ): Promise<boolean> {
+    await this.sendTextMessageWithId(phone, text, userId, route, opts);
+    return true;
+  }
+
+  /** Como sendTextMessage, pero devuelve el id del mensaje enviado (para poder recordar de dónde
+   * viene — ver rememberRelayOrigin) y acepta citar un mensaje / mencionar a alguien. */
+  static async sendTextMessageWithId(
+    phone: string,
+    text: string,
+    userId?: number,
+    route = 'mensaje',
+    opts?: { quoted?: RelayOrigin['quoted']; mentions?: string[] }
+  ): Promise<string | undefined> {
     let targetSession: WhatsappSession | undefined;
     if (userId) {
       targetSession = sessions.get(userId);
@@ -1194,8 +1257,24 @@ return connectPromise;
       throw new Error('No hay una sesión de WhatsApp conectada para enviar el mensaje.');
     }
 
-    await sendWithRetry(targetSession.socket, jid, { text }, route);
-    return true;
+    const sent = await sendWithRetry(
+      targetSession.socket,
+      jid,
+      opts?.mentions?.length ? { text, mentions: opts.mentions } : { text },
+      route,
+      opts?.quoted ? { quoted: opts.quoted as unknown as WAMessage } : undefined
+    );
+    return sent?.key?.id ?? undefined;
+  }
+
+  /** Guarda de qué mensaje original viene el mensaje del puente `bridgeMsgId` (ver RelayOrigin). */
+  static rememberRelayOrigin(userId: number, bridgeMsgId: string | null | undefined, origin: RelayOrigin): void {
+    rememberRelayOrigin(userId, bridgeMsgId, origin);
+  }
+
+  /** El mensaje original al que corresponde un mensaje del puente (si todavía se recuerda). */
+  static getRelayOrigin(userId: number, bridgeMsgId: string | null | undefined): RelayOrigin | undefined {
+    return bridgeMsgId ? relayOrigins.get(`${userId}:${bridgeMsgId}`) : undefined;
   }
 
   /**
