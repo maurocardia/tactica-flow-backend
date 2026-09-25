@@ -234,7 +234,8 @@ export class BotContactService {
         : new Date(Date.now() + minutes * 60 * 1000);
     await db.query(
       `UPDATE bot_contacts
-       SET handoff_advisor_id = $1, handoff_started_at = now(), handoff_expires_at = $2
+       SET handoff_advisor_id = $1, handoff_started_at = now(), handoff_expires_at = $2,
+           handoff_close_pending_at = NULL
        WHERE user_id = $3 AND owner_jid = $4 AND jid = $5`,
       [advisorId, expiresAt, userId, ownerJid, jid]
     );
@@ -326,6 +327,57 @@ export class BotContactService {
        WHERE user_id = $2 AND owner_jid = $3 AND jid = $4 AND handoff_expires_at > now()`,
       [minutes, userId, ownerJid, jid]
     );
+  }
+
+  /** Marca que se le preguntó a este cliente/grupo si se solucionó la duda, tras la palabra de
+   * cierre del asesor (ver AdvisorService.handleAdvisorCommand/handleCloseConfirmation) — mientras
+   * esté marcado, el próximo mensaje entrante de ese jid se interpreta como la respuesta sí/no en
+   * vez de reenviarse normal al asesor. */
+  static async setClosePending(userId: number, jid: string): Promise<void> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    await db.query(
+      `UPDATE bot_contacts SET handoff_close_pending_at = now() WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
+      [userId, ownerJid, jid]
+    );
+  }
+
+  static async clearClosePending(userId: number, jid: string): Promise<void> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    await db.query(
+      `UPDATE bot_contacts SET handoff_close_pending_at = NULL WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
+      [userId, ownerJid, jid]
+    );
+  }
+
+  static async isClosePending(userId: number, jid: string): Promise<boolean> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query(
+      `SELECT 1 FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND jid = $3 AND handoff_close_pending_at IS NOT NULL`,
+      [userId, ownerJid, jid]
+    );
+    return rows.length > 0;
+  }
+
+  /** Deja a la IA muda para este cliente por `minutes` minutos más — se llama al cerrar una
+   * atención humana (ver AdvisorService.getAiPauseAfterCloseMinutes/finishAdvisory), aparte de
+   * handoff_expires_at porque describe un estado distinto (ya no hay asesor, la IA sigue callada
+   * un rato igual). No hace nada si `minutes <= 0` (el llamador ya filtra ese caso). */
+  static async pauseAiFor(userId: number, jid: string, minutes: number): Promise<void> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    await db.query(
+      `UPDATE bot_contacts SET ai_paused_until = now() + ($1 || ' minutes')::interval
+       WHERE user_id = $2 AND owner_jid = $3 AND jid = $4`,
+      [minutes, userId, ownerJid, jid]
+    );
+  }
+
+  static async isAiPaused(userId: number, jid: string): Promise<boolean> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query(
+      `SELECT 1 FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND jid = $3 AND ai_paused_until > now()`,
+      [userId, ownerJid, jid]
+    );
+    return rows.length > 0;
   }
 
   /** Borra un contacto/grupo puntual de la lista — botón "X" del panel. Solo afecta bot_contacts. */

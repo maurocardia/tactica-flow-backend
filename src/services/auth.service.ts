@@ -103,6 +103,12 @@ export interface User {
   /** Minutos de silencio (de cualquiera de los dos lados) que tolera un relay YA ACTIVO antes de
    * cerrarse solo — distinto de handoffReservationMinutes (esa es la ventana antes/al asignar). */
   relayInactivityMinutes: number;
+  /** Palabra(s) que el asesor escribe para cerrar la atención — lista separada por comas
+   * (case-insensitive), ver AdvisorService.getFinishKeywords. Default 'FIN,LISTO'. */
+  advisorFinishKeywords: string;
+  /** Minutos que la IA queda muda para un cliente DESPUÉS de que se cierra su atención humana —
+   * 0 = reactivar de inmediato. Ver AdvisorService.getAiPauseAfterCloseMinutes. */
+  aiPauseAfterAdvisorMinutes: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -134,6 +140,8 @@ function mapUserRow(row: any): User {
     queueReminderMinutes: row.queue_reminder_minutes,
     queueReminderSeconds: row.queue_reminder_seconds,
     relayInactivityMinutes: row.relay_inactivity_minutes,
+    advisorFinishKeywords: row.advisor_finish_keywords,
+    aiPauseAfterAdvisorMinutes: row.ai_pause_after_advisor_minutes,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -265,6 +273,24 @@ export class AuthService {
   static async setRelayInactivityMinutes(id: number, minutes: number): Promise<User | null> {
     const { rows } = await db.query(
       `UPDATE users SET relay_inactivity_minutes = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [minutes, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setAdvisorFinishKeywords(id: number, keywords: string): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET advisor_finish_keywords = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [keywords, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setAiPauseAfterAdvisorMinutes(id: number, minutes: number): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET ai_pause_after_advisor_minutes = $1, updated_at = now() WHERE id = $2 RETURNING *`,
       [minutes, id]
     );
     if (rows.length === 0) return null;

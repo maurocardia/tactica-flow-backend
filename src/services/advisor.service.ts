@@ -186,6 +186,39 @@ export class AdvisorService {
     return user?.relayInactivityMinutes ?? AdvisorService.DEFAULT_RELAY_INACTIVITY_MINUTES;
   }
 
+  static readonly DEFAULT_FINISH_KEYWORDS = 'FIN,LISTO';
+
+  /** Palabra(s) que el asesor escribe para cerrar la atención de ESTE usuario — lista separada por
+   * comas, sin tocar mayúsculas/minúsculas (ver setAdvisorFinishKeywords en AuthService). A pedido
+   * explícito del usuario, la comparación es ESTRICTA con mayúsculas/minúsculas — "Fin" no
+   * matchea si se configuró "FIN". Comparación exacta contra el texto completo trimeado (no
+   * substring). */
+  static async getFinishKeywords(userId: number): Promise<string[]> {
+    const { AuthService } = await import('./auth.service.js');
+    const user = await AuthService.getUserById(userId);
+    const raw = user?.advisorFinishKeywords || AdvisorService.DEFAULT_FINISH_KEYWORDS;
+    return raw
+      .split(',')
+      .map((k) => k.trim())
+      .filter((k) => k.length > 0);
+  }
+
+  static readonly DEFAULT_AI_PAUSE_AFTER_ADVISOR_MINUTES = 0;
+
+  /** Minutos que la IA queda muda para un cliente DESPUÉS de que se cierra su atención humana — 0
+   * = reactivar de inmediato (comportamiento de siempre). Ver setAiPauseAfterAdvisorMinutes en
+   * AuthService y BotContactService.pauseAiFor/isAiPaused. */
+  static async getAiPauseAfterCloseMinutes(userId: number): Promise<number> {
+    const { AuthService } = await import('./auth.service.js');
+    const user = await AuthService.getUserById(userId);
+    return user?.aiPauseAfterAdvisorMinutes ?? AdvisorService.DEFAULT_AI_PAUSE_AFTER_ADVISOR_MINUTES;
+  }
+
+  // Variantes comunes de "sí"/"no" en español rioplatense/latino — comparación exacta contra el
+  // texto completo trimeado y en minúsculas (no substring: "no sé" no debe leerse como "no").
+  private static readonly YES_WORDS = new Set(['si', 'sí', 'sii', 'siii', 'dale', 'ok', 'okay', 'listo', 'correcto', 'exacto', 'se solucionó', 'se resolvió']);
+  private static readonly NO_WORDS = new Set(['no', 'nel', 'negativo', 'todavia no', 'todavía no', 'aun no', 'aún no', 'no todavia', 'no todavía']);
+
   /**
    * Si esta conversación YA tiene un asesor reservado y esa reserva todavía no venció
    * (bot_contacts.handoff_advisor_id/handoff_expires_at — ver reserveHandoffAdvisor/
@@ -370,6 +403,37 @@ export class AdvisorService {
     }
   }
 
+  /**
+   * Agrega una nota de sistema ("consulta resuelta por un asesor humano") al historial que ve la
+   * IA de esta conversación — se llama al cerrar una atención (ver finishAdvisory) para que el
+   * pedido ORIGINAL que motivó la derivación (que la IA nunca llegó a contestar, se fue directo a
+   * un humano) no quede "pendiente" en el historial y dispare una nueva derivación automática la
+   * próxima vez que el cliente escriba cualquier cosa. Se guarda con sender='agent' (mismo trato
+   * que un mensaje de WhatsApp Web propio — ver ConversationService.toAiHistory: cuenta como turno
+   * del asistente, no del cliente).
+   *
+   * En un GRUPO (jid termina en @g.us) hay una fila de `conversations` POR PARTICIPANTE (ver
+   * WhatsappService.handleIncomingMessage) — se le agrega la nota a todas, no solo a quien pidió
+   * el asesor originalmente, porque cualquiera del grupo pudo haber sido quien preguntó.
+   */
+  static async markResolvedInHistory(userId: number, jid: string): Promise<void> {
+    const { ConversationService } = await import('./conversation.service.js');
+    const note = '✅ El asesor humano cerró esta consulta — quedó resuelta.';
+
+    if (jid.endsWith('@g.us')) {
+      const groupId = jid.split('@')[0];
+      const conversations = await ConversationService.listByPhonePrefix(userId, groupId);
+      for (const conv of conversations) {
+        await ConversationService.addMessage(conv.id, 'agent', note);
+      }
+      return;
+    }
+
+    const phone = jid.split('@')[0];
+    const conversation = await ConversationService.findOrCreateByPhone(phone, phone, userId, null);
+    await ConversationService.addMessage(conversation.id, 'agent', note);
+  }
+
   /** Le manda al CLIENTE el mensaje de seguimiento después de que se cierra la atención humana —
    * usado tanto por finishAdvisory como por la ruta PUT /bot-contacts/:id/resume-bot (que limpia
    * la reserva por id de fila en vez de por jid, ver clearHandoffPause). */
@@ -389,11 +453,19 @@ export class AdvisorService {
    * Si se pasa `expectedAdvisorId`, solo actúa cuando la reserva vigente es justo de ESE asesor —
    * evita que el comando "FIN" de un asesor cierre por error la atención de otro (ej. si escribe
    * mal el número del cliente y ese número resulta tener una reserva de un compañero).
+   *
+   * `skipFollowUp: true` omite el "¿Quedó resuelta tu consulta?" — lo usa handleCloseConfirmation
+   * cuando el cliente YA contestó que sí a esa misma pregunta (ver requestCloseConfirmation);
+   * mandarla de nuevo acá sería repetirle la misma pregunta que acaba de responder.
+   *
+   * Al asesor SIEMPRE se le avisa que se liberó su atención (antes solo pasaba en algunos
+   * caminos) — `advisorNotifyText` permite un texto más específico según por dónde se cerró (ej.
+   * "el cliente confirmó que se solucionó"); si no se pasa, usa uno genérico.
    */
   static async finishAdvisory(
     userId: number,
     jid: string,
-    opts?: { expectedAdvisorId?: number }
+    opts?: { expectedAdvisorId?: number; skipFollowUp?: boolean; advisorNotifyText?: string }
   ): Promise<'notified' | 'no_active_reservation' | 'mismatch'> {
     const { BotContactService } = await import('./botContact.service.js');
     const reservation = await BotContactService.getHandoffReservation(userId, jid);
@@ -405,22 +477,56 @@ export class AdvisorService {
     }
 
     await BotContactService.releaseHandoffReservationByJid(userId, jid);
+    await BotContactService.clearClosePending(userId, jid);
     trace('ATENCION_CERRADA', { usuario: userId, cliente: jid, asesorId: reservation.advisorId, estabaActiva: active });
     if (!active) return 'no_active_reservation';
 
+    // Nota de sistema para que la IA no vuelva a derivar sola al toque: sin esto, el historial de
+    // la charla se quedaba con el pedido ORIGINAL sin resolver (la IA nunca llegó a contestarlo,
+    // se derivó directo a la persona) — así que el próximo mensaje del cliente (aunque fuera un
+    // simple "Hola") hacía que la IA viera ese pedido "todavía pendiente" y derivara de nuevo.
     try {
-      await AdvisorService.notifyCustomerFollowUp(userId, jid);
+      await AdvisorService.markResolvedInHistory(userId, jid);
     } catch (err) {
-      console.error('⚠️ [AdvisorService] No se pudo enviar el mensaje de seguimiento al cliente:', err);
+      console.error('⚠️ [AdvisorService] No se pudo marcar la consulta como resuelta en el historial:', err);
     }
 
-    // Se acaba de liberar un cupo — si hay alguien esperando en la cola, se le asigna a ESTE
-    // asesor antes que a cualquiera (así el próximo handoffConversation no se lo lleva primero).
+    if (!opts?.skipFollowUp) {
+      try {
+        await AdvisorService.notifyCustomerFollowUp(userId, jid);
+      } catch (err) {
+        console.error('⚠️ [AdvisorService] No se pudo enviar el mensaje de seguimiento al cliente:', err);
+      }
+    }
+
+    // La IA sigue muda un rato más para este cliente si la cuenta configuró una pausa post-cierre
+    // (distinto del timeout de inactividad DURANTE el relay) — ver getAiPauseAfterCloseMinutes.
+    const aiPauseMinutes = await AdvisorService.getAiPauseAfterCloseMinutes(userId);
+    if (aiPauseMinutes > 0) {
+      try {
+        await BotContactService.pauseAiFor(userId, jid, aiPauseMinutes);
+        trace('IA_PAUSADA_POST_CIERRE', { usuario: userId, cliente: jid, minutos: aiPauseMinutes });
+      } catch (err) {
+        console.error('⚠️ [AdvisorService] No se pudo pausar la IA post-cierre:', err);
+      }
+    }
+
     if (reservation.advisorId) {
       await AdvisorService.markFreed(reservation.advisorId);
       try {
         const advisor = await AdvisorService.getById(userId, reservation.advisorId);
-        if (advisor) await AdvisorService.promoteNextFromQueue(userId, advisor);
+        if (advisor) {
+          // Avisarle al asesor ANTES de promoverlo a un cliente nuevo de la cola, para que el
+          // orden de mensajes tenga sentido ("se liberó" antes de "te asignamos otro").
+          try {
+            await AdvisorService.replyToAdvisor(userId, advisor, opts?.advisorNotifyText || 'Listo ✅ Se liberó tu atención con este cliente.');
+          } catch (err) {
+            console.error('⚠️ [AdvisorService] No se pudo avisarle al asesor que se liberó la atención:', err);
+          }
+          // Se acaba de liberar un cupo — si hay alguien esperando en la cola, se le asigna a
+          // ESTE asesor antes que a cualquiera (así el próximo handoffConversation no se lo lleva).
+          await AdvisorService.promoteNextFromQueue(userId, advisor);
+        }
       } catch (err) {
         console.error('⚠️ [AdvisorService] Error promoviendo el siguiente de la cola:', err);
       }
@@ -447,6 +553,78 @@ export class AdvisorService {
     // liberar" en vez de un error — evita un estado inconsistente si la reserva venció/cambió
     // entre el getActiveClientForAdvisor de arriba y el finishAdvisory de acá.
     return result === 'mismatch' ? 'no_active_reservation' : result;
+  }
+
+  /**
+   * El asesor escribió la palabra de cierre — en vez de liberar directo (como antes), le pregunta
+   * al CLIENTE (o a TODO el grupo, si la atención es grupal) si se solucionó la duda, y marca la
+   * conversación como "esperando confirmación" (BotContactService.setClosePending). El cierre
+   * real recién pasa cuando esa pregunta se contesta que sí — ver handleCloseConfirmation, llamado
+   * desde whatsapp.service.ts antes de reenviar el próximo mensaje de ese jid al asesor.
+   */
+  static async requestCloseConfirmation(userId: number, clientJid: string, advisor: Advisor): Promise<void> {
+    const { BotContactService } = await import('./botContact.service.js');
+    const { WhatsappService } = await import('./whatsapp.service.js');
+    await BotContactService.setClosePending(userId, clientJid);
+    trace('CIERRE_CONFIRMACION_PEDIDA', { usuario: userId, cliente: clientJid, asesor: advisor.name });
+    try {
+      await WhatsappService.sendTextMessage(
+        clientJid.split('@')[0],
+        '¿Se solucionó tu consulta? Respondé *sí* o *no*.',
+        userId,
+        'cierre→confirmación cliente'
+      );
+    } catch (err) {
+      console.error('⚠️ [AdvisorService] No se pudo preguntar al cliente si se solucionó:', err);
+    }
+    await AdvisorService.replyToAdvisor(userId, advisor, 'Le pregunté al cliente si se solucionó. Te aviso apenas responda.');
+  }
+
+  /**
+   * Interpreta la respuesta del cliente/grupo a "¿se solucionó tu consulta?" (ver
+   * requestCloseConfirmation) — se llama ANTES de reenviar un mensaje entrante al asesor, solo
+   * cuando BotContactService.isClosePending dice que hay una confirmación pendiente para ese jid.
+   *
+   * - Si el texto matchea una variante de "sí" → cierra de verdad (finishAdvisory: libera al
+   *   asesor, promueve a la cola, aplica la pausa de IA post-cierre si está configurada).
+   * - Si matchea "no" → NO cierra: limpia el flag y le avisa al asesor que tiene que seguir en el
+   *   chat porque la duda no se resolvió.
+   * - Si no matchea ninguna de las dos (mensaje ambiguo, o simplemente siguió contando el
+   *   problema) → deja el flag como estaba y devuelve 'ambiguous', para que el llamador reenvíe
+   *   este mensaje al asesor con normalidad (no perder contexto real solo porque no dijo "sí"/"no"
+   *   textual) y la próxima respuesta se vuelva a chequear contra sí/no.
+   */
+  static async handleCloseConfirmation(
+    userId: number,
+    clientJid: string,
+    text: string,
+    advisor: Advisor
+  ): Promise<'closed' | 'kept_open' | 'ambiguous'> {
+    const { BotContactService } = await import('./botContact.service.js');
+    const trimmed = text.trim().toLowerCase();
+
+    if (AdvisorService.YES_WORDS.has(trimmed)) {
+      trace('CIERRE_CONFIRMADO_SI', { usuario: userId, cliente: clientJid, asesor: advisor.name });
+      // skipFollowUp: el cliente ya contestó "sí" a "¿se solucionó tu consulta?" (ver
+      // requestCloseConfirmation) — mandarle notifyCustomerFollowUp acá le repetiría la misma
+      // pregunta que recién respondió. advisorNotifyText: el aviso al asesor que finishAdvisory
+      // manda solo — requestCloseConfirmation le había dicho "te aviso apenas responda".
+      await AdvisorService.finishAdvisory(userId, clientJid, {
+        expectedAdvisorId: advisor.id,
+        skipFollowUp: true,
+        advisorNotifyText: 'Listo ✅ El cliente confirmó que se solucionó — se liberó la atención.'
+      });
+      return 'closed';
+    }
+
+    if (AdvisorService.NO_WORDS.has(trimmed)) {
+      trace('CIERRE_CONFIRMADO_NO', { usuario: userId, cliente: clientJid, asesor: advisor.name });
+      await BotContactService.clearClosePending(userId, clientJid);
+      await AdvisorService.replyToAdvisor(userId, advisor, 'El cliente dijo que todavía no se solucionó — seguís en el chat.');
+      return 'kept_open';
+    }
+
+    return 'ambiguous';
   }
 
   private static async replyToAdvisor(userId: number, advisor: Advisor, text: string): Promise<void> {
@@ -491,14 +669,10 @@ export class AdvisorService {
     trace('ASESOR_RECONOCIDO', { usuario: userId, asesor: advisor.name, asesorTel: phone, cliente: activeClientJid });
 
     const trimmed = text.trim();
-    if (/^(fin|listo)$/i.test(trimmed)) {
+    const finishKeywords = await AdvisorService.getFinishKeywords(userId);
+    if (finishKeywords.includes(trimmed)) {
       trace('ASESOR_FIN', { usuario: userId, asesor: advisor.name, cliente: activeClientJid });
-      const result = await AdvisorService.finishAdvisory(userId, activeClientJid, { expectedAdvisorId: advisor.id });
-      const reply =
-        result === 'notified'
-          ? 'Listo ✅ Se liberó la atención y se le preguntó al cliente si quedó resuelta su consulta.'
-          : 'No encontré ninguna atención activa tuya en este momento.';
-      await AdvisorService.replyToAdvisor(userId, advisor, reply);
+      await AdvisorService.requestCloseConfirmation(userId, activeClientJid, advisor);
       return true;
     }
 

@@ -410,6 +410,29 @@ const SCHEMA_SQL = `
   -- el mismo panel de "Asesores humanos".
   ALTER TABLE users ADD COLUMN IF NOT EXISTS relay_inactivity_minutes INT NOT NULL DEFAULT 60;
 
+  -- Palabra(s) clave que el asesor escribe para cerrar la atención (antes fija: "FIN"/"LISTO" en
+  -- AdvisorService.handleAdvisorCommand) — lista separada por comas, configurable por cuenta en el
+  -- mismo panel de "Asesores humanos". Default mantiene el comportamiento de siempre.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS advisor_finish_keywords TEXT NOT NULL DEFAULT 'FIN,LISTO';
+
+  -- Minutos que la IA queda muda para un cliente DESPUÉS de que se cierra su atención humana
+  -- (distinto de relay_inactivity_minutes, que es el timeout DURANTE el relay) — 0 = reactivar de
+  -- inmediato (comportamiento de siempre). Ver AdvisorService.getAiPauseAfterCloseMinutes y
+  -- bot_contacts.ai_paused_until más abajo.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_pause_after_advisor_minutes INT NOT NULL DEFAULT 0;
+
+  -- Marca que el asesor ya escribió la palabra de cierre y se le está por preguntar al cliente (o
+  -- al grupo) si se solucionó la duda — mientras esta columna tiene un valor, el próximo mensaje
+  -- del cliente/grupo se interpreta como esa respuesta (sí/no) en vez de reenviarse normal al
+  -- asesor (ver AdvisorService.handleCloseConfirmation). NULL = no hay ninguna confirmación
+  -- pendiente. El valor en sí (el timestamp) no se usa para nada más que "existe o no existe".
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS handoff_close_pending_at TIMESTAMPTZ;
+
+  -- Vencimiento de la pausa de IA post-cierre (ver ai_pause_after_advisor_minutes arriba) — NULL o
+  -- vencido = la IA responde normal. Columna aparte de handoff_expires_at porque describe un
+  -- estado distinto (ya NO hay asesor asignado, la IA está muda igual por un rato).
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS ai_paused_until TIMESTAMPTZ;
+
   -- Adjuntos multimedia de los bloques de flujo (Enviar Imagen/Video/Audio/Documento). Los bytes
   -- se guardan acá y se cargan en proceso para pasárselos a Baileys como Buffer — así no hace
   -- falta exponer una URL pública ni que el backend sea alcanzable desde internet.

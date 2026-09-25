@@ -330,6 +330,50 @@ router.put('/relay-inactivity-minutes', async (req: Request, res: Response) => {
   }
 });
 
+// Palabra(s) clave para que el asesor cierre la atención (antes fija: "FIN"/"LISTO") — lista
+// separada por comas, ver AdvisorService.getFinishKeywords.
+const FINISH_KEYWORDS_MAX_LEN = 200;
+router.put('/advisor-finish-keywords', async (req: Request, res: Response) => {
+  const { keywords } = req.body;
+  if (typeof keywords !== 'string' || !keywords.trim() || keywords.length > FINISH_KEYWORDS_MAX_LEN) {
+    return res.status(400).json({
+      error: `El campo "keywords" es requerido, no puede estar vacío, y debe tener como máximo ${FINISH_KEYWORDS_MAX_LEN} caracteres`
+    });
+  }
+
+  try {
+    const user = await AuthService.setAdvisorFinishKeywords(req.user!.id, keywords.trim());
+    res.json({ advisorFinishKeywords: user?.advisorFinishKeywords ?? keywords.trim() });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar la palabra de cierre del asesor' });
+  }
+});
+
+// Minutos que la IA queda muda para un cliente DESPUÉS de que se cierra su atención humana — 0 =
+// reactivar de inmediato. Ver AdvisorService.getAiPauseAfterCloseMinutes.
+const AI_PAUSE_AFTER_ADVISOR_MINUTES_MIN = 0;
+const AI_PAUSE_AFTER_ADVISOR_MINUTES_MAX = 1440;
+router.put('/ai-pause-after-advisor-minutes', async (req: Request, res: Response) => {
+  const { minutes } = req.body;
+  if (
+    typeof minutes !== 'number' ||
+    !Number.isInteger(minutes) ||
+    minutes < AI_PAUSE_AFTER_ADVISOR_MINUTES_MIN ||
+    minutes > AI_PAUSE_AFTER_ADVISOR_MINUTES_MAX
+  ) {
+    return res.status(400).json({
+      error: `El campo "minutes" debe ser un entero entre ${AI_PAUSE_AFTER_ADVISOR_MINUTES_MIN} y ${AI_PAUSE_AFTER_ADVISOR_MINUTES_MAX}`
+    });
+  }
+
+  try {
+    const user = await AuthService.setAiPauseAfterAdvisorMinutes(req.user!.id, minutes);
+    res.json({ aiPauseAfterAdvisorMinutes: user?.aiPauseAfterAdvisorMinutes ?? minutes });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar la pausa de IA post-atención' });
+  }
+});
+
 // Modo de respuesta del bot (Híbrido/Solo IA/Solo Flujos) — ver ChatbotModule.tsx y
 // BotEngineService.processIncomingMessage.
 const VALID_BOT_MODES: BotMode[] = ['flow_only', 'ai_only', 'hybrid'];
@@ -642,7 +686,10 @@ router.post('/advisors', async (req: Request, res: Response) => {
 
   try {
     const advisor = await AdvisorService.create(req.user!.id, name.trim(), cleanPhone);
-    res.json(advisor);
+    // activeClient siempre null acá (recién se crea, no puede tener ningún relay activo todavía)
+    // — se agrega para que la forma coincida con GET /advisors, que sí lo trae (ver Advisor en el
+    // frontend: activeClient no es opcional).
+    res.json({ ...advisor, activeClient: null });
   } catch (error: any) {
     if (error?.code === '23505') {
       return res.status(409).json({ error: 'Ya existe un asesor con ese número de teléfono' });
@@ -679,7 +726,10 @@ router.put('/advisors/:id', async (req: Request, res: Response) => {
       isActive
     });
     if (!advisor) return res.status(404).json({ error: 'Asesor no encontrado' });
-    res.json(advisor);
+    // Misma razón que en POST /advisors: la forma tiene que coincidir con GET /advisors (activeClient
+    // no es opcional en el tipo del frontend).
+    const activeClient = await BotContactService.getActiveClientForAdvisor(req.user!.id, advisor.id);
+    res.json({ ...advisor, activeClient });
   } catch (error: any) {
     if (error?.code === '23505') {
       return res.status(409).json({ error: 'Ya existe un asesor con ese número de teléfono' });
