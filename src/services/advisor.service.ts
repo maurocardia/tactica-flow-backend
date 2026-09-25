@@ -653,7 +653,7 @@ export class AdvisorService {
    * cortar el procesamiento normal ahí); false si no aplica (no es un asesor, o es un asesor sin
    * cliente activo escribiendo otra cosa) y el mensaje debe seguir su camino normal.
    */
-  static async handleAdvisorCommand(userId: number, phone: string, text: string): Promise<boolean> {
+  static async handleAdvisorCommand(userId: number, phone: string, text: string, quotedMsgId?: string): Promise<boolean> {
     const advisor = await AdvisorService.findByPhone(userId, phone);
     if (!advisor) return false;
 
@@ -682,9 +682,32 @@ export class AdvisorService {
     // charla activa.
     const { WhatsappService } = await import('./whatsapp.service.js');
     const minutes = await AdvisorService.getRelayInactivityMinutes(userId);
-    trace('PUENTE_ASESOR_A_CLIENTE', { usuario: userId, asesor: advisor.name, cliente: activeClientJid, texto: preview(text) });
+    // Si el asesor deslizó para responderle a un mensaje del puente, se recuerda a qué mensaje
+    // original del cliente/grupo correspondía (ver WhatsappService.rememberRelayOrigin): la
+    // respuesta sale citándolo — y en un grupo, mencionando a quien lo escribió — en vez de quedar
+    // citada solo en el chat del puente. Solo se usa si ese origen es de ESTE mismo cliente/grupo
+    // (por si el asesor cita un mensaje viejo de una atención anterior).
+    const origin = WhatsappService.getRelayOrigin(userId, quotedMsgId);
+    const usableOrigin = origin && origin.targetJid === activeClientJid ? origin : undefined;
+    const mention = usableOrigin?.participantJid;
+    const mentionTag = mention ? `@${mention.split('@')[0]} ` : '';
+    trace('PUENTE_ASESOR_A_CLIENTE', {
+      usuario: userId,
+      asesor: advisor.name,
+      cliente: activeClientJid,
+      texto: preview(text),
+      citando: usableOrigin ? true : undefined,
+      cita_no_encontrada: quotedMsgId && !usableOrigin ? true : undefined,
+      menciona: mention
+    });
     try {
-      await WhatsappService.sendTextMessage(activeClientJid.split('@')[0], `👨‍💼 *${advisor.name}:* ${text}`, userId, 'puente asesor→cliente');
+      await WhatsappService.sendTextMessage(
+        activeClientJid.split('@')[0],
+        `${mentionTag}👨‍💼 *${advisor.name}:* ${text}`,
+        userId,
+        'puente asesor→cliente',
+        usableOrigin ? { quoted: usableOrigin.quoted, mentions: mention ? [mention] : undefined } : undefined
+      );
     } catch (err) {
       console.error(`⚠️ [AdvisorService] No se pudo reenviar el mensaje del asesor "${advisor.name}" al cliente:`, err);
     }
