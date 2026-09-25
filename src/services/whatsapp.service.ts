@@ -88,6 +88,31 @@ function rememberRelayOrigin(userId: number, bridgeMsgId: string | null | undefi
   }
 }
 
+// Sentido inverso del anterior: por cada mensaje que el bot le manda al cliente/grupo EN NOMBRE
+// del asesor, recuerda cuál fue el mensaje original del asesor (el que él escribió en el chat del
+// puente). Así, cuando alguien del cliente/grupo desliza para responderle a ESE mensaje, el
+// reenvío al asesor sale citando su propio mensaje en el chat puente — en vez de llegarle como
+// un texto suelto sin contexto. Mismas condiciones que relayOrigins (memoria, tope, se pierde al
+// reiniciar). Ver AdvisorService.handleAdvisorCommand y handleIncomingMessage.
+export interface AdvisorMessageOrigin {
+  /** Teléfono (solo dígitos) del asesor dueño del mensaje original. */
+  advisorPhone: string;
+  /** Mensaje original del asesor (key + contenido) que se cita al reenviarle la respuesta. */
+  quoted: { key: proto.IMessageKey; message: proto.IMessage };
+}
+const advisorMessageOrigins = new Map<string, AdvisorMessageOrigin>();
+
+function rememberAdvisorMessageOrigin(userId: number, sentToClientMsgId: string | null | undefined, origin: AdvisorMessageOrigin) {
+  if (!sentToClientMsgId) return;
+  const key = `${userId}:${sentToClientMsgId}`;
+  advisorMessageOrigins.delete(key);
+  advisorMessageOrigins.set(key, origin);
+  if (advisorMessageOrigins.size > MAX_RELAY_ORIGINS) {
+    const oldest = advisorMessageOrigins.keys().next().value;
+    if (oldest !== undefined) advisorMessageOrigins.delete(oldest);
+  }
+}
+
 function isDuplicateMessage(userId: number, msgId: string | null | undefined): boolean {
   if (!msgId) return false;
   const key = `${userId}:${msgId}`;
@@ -925,7 +950,8 @@ return connectPromise;
         const { AdvisorService } = await import('./advisor.service.js');
         // Si el asesor deslizó para responderle a un mensaje del puente, viene el id de ESE mensaje.
         const quotedMsgId = msg.message?.extendedTextMessage?.contextInfo?.stanzaId ?? undefined;
-        if (await AdvisorService.handleAdvisorCommand(userId, phone, text, quotedMsgId)) return;
+        const advisorMsg = msg.key && msg.message ? { key: msg.key, message: msg.message } : undefined;
+        if (await AdvisorService.handleAdvisorCommand(userId, phone, text, quotedMsgId, advisorMsg)) return;
       } catch (err) {
         console.error('⚠️ [WhatsApp] Error procesando comando de asesor:', err);
       }
@@ -1019,12 +1045,32 @@ return connectPromise;
           msgId: msg.key?.id,
           texto: preview(text)
         });
+        // Si quien escribió deslizó para responderle a un mensaje del asesor, el reenvío sale
+        // citando ESE mensaje en el chat puente. Si ya no se recuerda (reinicio del backend, o citó
+        // otra cosa), se antepone el texto citado para que el asesor igual tenga el contexto.
+        const clientContext = msg.message?.extendedTextMessage?.contextInfo;
+        const advisorOrigin = WhatsappService.getAdvisorMessageOrigin(userId, clientContext?.stanzaId);
+        const usableAdvisorOrigin =
+          advisorOrigin && advisorOrigin.advisorPhone.replace(/[^0-9]/g, '') === activeAdvisor.phone.replace(/[^0-9]/g, '')
+            ? advisorOrigin
+            : undefined;
+        const quotedText = clientContext?.quotedMessage?.conversation || clientContext?.quotedMessage?.extendedTextMessage?.text || '';
+        const contextPrefix = !usableAdvisorOrigin && quotedText ? `↪️ _${preview(quotedText)}_\n` : '';
+        trace('PUENTE_CLIENTE_A_ASESOR_CITA', {
+          usuario: userId,
+          cliente: phone,
+          msgId: msg.key?.id,
+          cito: clientContext?.stanzaId ? true : undefined,
+          citando: usableAdvisorOrigin ? true : undefined,
+          contexto_texto: !usableAdvisorOrigin && quotedText ? true : undefined
+        });
         try {
           const bridgeMsgId = await WhatsappService.sendTextMessageWithId(
             activeAdvisor.phone,
-            `🧑 *${relayLabel}:* ${text}`,
+            `${contextPrefix}🧑 *${relayLabel}:* ${text}`,
             userId,
-            'puente cliente→asesor'
+            'puente cliente→asesor',
+            usableAdvisorOrigin ? { quoted: usableAdvisorOrigin.quoted } : undefined
           );
           if (msg.key && msg.message) {
             WhatsappService.rememberRelayOrigin(userId, bridgeMsgId, {
@@ -1270,6 +1316,16 @@ return connectPromise;
   /** Guarda de qué mensaje original viene el mensaje del puente `bridgeMsgId` (ver RelayOrigin). */
   static rememberRelayOrigin(userId: number, bridgeMsgId: string | null | undefined, origin: RelayOrigin): void {
     rememberRelayOrigin(userId, bridgeMsgId, origin);
+  }
+
+  /** Guarda de qué mensaje del asesor viene el mensaje `sentToClientMsgId` que se le mandó al cliente. */
+  static rememberAdvisorMessageOrigin(userId: number, sentToClientMsgId: string | null | undefined, origin: AdvisorMessageOrigin): void {
+    rememberAdvisorMessageOrigin(userId, sentToClientMsgId, origin);
+  }
+
+  /** El mensaje del asesor al que corresponde un mensaje mandado al cliente (si todavía se recuerda). */
+  static getAdvisorMessageOrigin(userId: number, sentToClientMsgId: string | null | undefined): AdvisorMessageOrigin | undefined {
+    return sentToClientMsgId ? advisorMessageOrigins.get(`${userId}:${sentToClientMsgId}`) : undefined;
   }
 
   /** El mensaje original al que corresponde un mensaje del puente (si todavía se recuerda). */

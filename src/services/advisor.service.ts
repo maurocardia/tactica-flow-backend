@@ -1,4 +1,5 @@
 import { db } from '../config/db.js';
+import type { proto } from '@whiskeysockets/baileys';
 import { looksLikePhoneDigits } from '../utils/whatsappIdentity.js';
 import { trace, preview } from '../utils/trace.js';
 
@@ -653,7 +654,13 @@ export class AdvisorService {
    * cortar el procesamiento normal ahí); false si no aplica (no es un asesor, o es un asesor sin
    * cliente activo escribiendo otra cosa) y el mensaje debe seguir su camino normal.
    */
-  static async handleAdvisorCommand(userId: number, phone: string, text: string, quotedMsgId?: string): Promise<boolean> {
+  static async handleAdvisorCommand(
+    userId: number,
+    phone: string,
+    text: string,
+    quotedMsgId?: string,
+    advisorMsg?: { key: proto.IMessageKey; message: proto.IMessage }
+  ): Promise<boolean> {
     const advisor = await AdvisorService.findByPhone(userId, phone);
     if (!advisor) return false;
 
@@ -701,13 +708,21 @@ export class AdvisorService {
       menciona: mention
     });
     try {
-      await WhatsappService.sendTextMessage(
+      const sentToClientId = await WhatsappService.sendTextMessageWithId(
         activeClientJid.split('@')[0],
         `${mentionTag}👨‍💼 *${advisor.name}:* ${text}`,
         userId,
         'puente asesor→cliente',
         usableOrigin ? { quoted: usableOrigin.quoted, mentions: mention ? [mention] : undefined } : undefined
       );
+      // Recuerda de qué mensaje del asesor salió este, por si el cliente/grupo lo cita después
+      // (ver el reenvío cliente→asesor en handleIncomingMessage).
+      if (advisorMsg) {
+        WhatsappService.rememberAdvisorMessageOrigin(userId, sentToClientId, {
+          advisorPhone: advisor.phone,
+          quoted: advisorMsg
+        });
+      }
     } catch (err) {
       console.error(`⚠️ [AdvisorService] No se pudo reenviar el mensaje del asesor "${advisor.name}" al cliente:`, err);
     }
