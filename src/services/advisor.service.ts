@@ -168,12 +168,21 @@ export class AdvisorService {
   // panel) — esto es solo el valor por default cuando esa columna es NULL.
   static readonly DEFAULT_HANDOFF_RESERVATION_MINUTES = 30;
 
-  /** Cuántos minutos dura la reserva de asesor para ESTE usuario — ver
-   * setHandoffReservationMinutes en AuthService y el default de arriba. */
+  /** Cuántos minutos dura la reserva de asesor para ESTE usuario al asignarlo — ver
+   * setHandoffReservationMinutes en AuthService y el default de arriba. Nunca más que el timeout
+   * de inactividad: ese timeout es "cuánto puede quedar quieta la charla", y tiene que correr
+   * desde que se asigna el asesor, no recién desde el primer mensaje que pasa por el puente — si
+   * no, una derivación en la que nadie escribe quedaba tomada los 30 minutos de la reserva aunque
+   * el timeout estuviera en 1 minuto. "Sin límite" (UNLIMITED_RESERVATION_MINUTES) también cede
+   * al timeout, por la misma razón. */
   static async getReservationMinutes(userId: number): Promise<number> {
     const { AuthService } = await import('./auth.service.js');
+    const { UNLIMITED_RESERVATION_MINUTES } = await import('./botContact.service.js');
     const user = await AuthService.getUserById(userId);
-    return user?.handoffReservationMinutes ?? AdvisorService.DEFAULT_HANDOFF_RESERVATION_MINUTES;
+    const reservation = user?.handoffReservationMinutes ?? AdvisorService.DEFAULT_HANDOFF_RESERVATION_MINUTES;
+    const inactivity = user?.relayInactivityMinutes ?? AdvisorService.DEFAULT_RELAY_INACTIVITY_MINUTES;
+    if (reservation === UNLIMITED_RESERVATION_MINUTES) return inactivity;
+    return Math.min(reservation, inactivity);
   }
 
   // Timeout de inactividad de un relay YA ACTIVO — distinto de getReservationMinutes (esa es la
