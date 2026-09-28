@@ -63,7 +63,6 @@ const SCHEMA_SQL = `
   );
 
   ALTER TABLE conversations ADD COLUMN IF NOT EXISTS owner_jid TEXT NOT NULL DEFAULT '';
-  CREATE INDEX IF NOT EXISTS idx_conversations_owner_jid ON conversations(user_id, owner_jid);
 
   CREATE TABLE IF NOT EXISTS messages (
     id SERIAL PRIMARY KEY,
@@ -120,6 +119,8 @@ const SCHEMA_SQL = `
   -- conversaciones creadas antes de esta migración (demo/web sin WhatsApp conectado) no tienen
   -- dueño; ADD COLUMN IF NOT EXISTS porque la tabla "conversations" ya existe en producción.
   ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id INT REFERENCES users(id);
+  -- Recién acá: en una base vacía user_id todavía no existe antes del ADD COLUMN de arriba.
+  CREATE INDEX IF NOT EXISTS idx_conversations_owner_jid ON conversations(user_id, owner_jid);
 
   -- Nombre del grupo de WhatsApp cuando esta conversación es la de UN participante puntual
   -- dentro de un grupo (ver WhatsappService.handleIncomingMessage: cada participante tiene su
