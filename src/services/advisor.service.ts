@@ -328,9 +328,16 @@ export class AdvisorService {
     let summary = 'El cliente necesita atención — no se pudo generar un resumen automático.';
     try {
       const { AIService } = await import('./ai.service.js');
-      const transcript = conversationHistory.map((m) => `${m.role === 'user' ? 'Cliente' : 'Bot'}: ${m.content}`).join('\n');
+      const transcript = await AdvisorService.buildSummaryTranscript(userId, jid, conversationHistory);
       const { text } = await AIService.processMessage(
-        `Resumí en máximo 5 líneas esta conversación de WhatsApp para que un asesor humano pueda retomar la atención:\n${transcript}`,
+        [
+          'Preparás un resumen para un asesor humano que va a retomar esta conversación de WhatsApp.',
+          'Resumí en máximo 4 líneas SOLO lo que el cliente necesita ahora: su consulta o pedido pendiente más reciente, y el contexto mínimo para atenderlo (a qué se dedica, cuántas personas usarían el sistema, qué problema tiene — solo si lo dijo).',
+          'No incluyas temas que ya quedaron resueltos, saludos ni lo que respondió el bot. No inventes datos.',
+          '',
+          'Conversación (lo más reciente al final):',
+          transcript
+        ].join('\n'),
         [],
         {},
         '',
@@ -344,9 +351,9 @@ export class AdvisorService {
 
     const message = [
       '🔔 *Derivación Automática*',
-      `📱 Cliente: ${customerName} (${looksLikePhoneDigits(customerPhone.replace(/[^0-9]/g, '')) ? customerPhone : 'número oculto — usuario de WhatsApp'})`,
+      ...(await AdvisorService.clientLabelLines(userId, jid, customerName, customerPhone)),
       `📋 Resumen: ${summary}`,
-      '💬 Escribile por acá mismo y se lo reenvío — cuando termines, escribí FIN.',
+      await AdvisorService.relayInstructionsLine(userId),
     ].join('\n');
 
     try {
@@ -389,8 +396,8 @@ export class AdvisorService {
         advisor.phone,
         [
           '🔔 *Se te asignó un cliente que estaba en la cola*',
-          `📱 Cliente: ${next.customerName} (${phone})`,
-          '💬 Escribile por acá mismo y se lo reenvío — cuando termines, escribí FIN.',
+          ...(await AdvisorService.clientLabelLines(userId, next.jid, next.customerName)),
+          await AdvisorService.relayInstructionsLine(userId),
         ].join('\n'),
         userId,
         'cola→asesor'
@@ -418,9 +425,11 @@ export class AdvisorService {
    * WhatsappService.handleIncomingMessage) — se le agrega la nota a todas, no solo a quien pidió
    * el asesor originalmente, porque cualquiera del grupo pudo haber sido quien preguntó.
    */
-  static async markResolvedInHistory(userId: number, jid: string): Promise<void> {
+  static readonly RESOLVED_NOTE = '✅ El asesor humano cerró esta consulta — quedó resuelta.';
+  static readonly TIMEOUT_NOTE = '⏱️ La atención con el asesor humano se cerró por inactividad.';
+
+  static async markResolvedInHistory(userId: number, jid: string, note: string = AdvisorService.RESOLVED_NOTE): Promise<void> {
     const { ConversationService } = await import('./conversation.service.js');
-    const note = '✅ El asesor humano cerró esta consulta — quedó resuelta.';
 
     if (jid.endsWith('@g.us')) {
       const groupId = jid.split('@')[0];
@@ -434,6 +443,177 @@ export class AdvisorService {
     const phone = jid.split('@')[0];
     const conversation = await ConversationService.findOrCreateByPhone(phone, phone, userId, null);
     await ConversationService.addMessage(conversation.id, 'agent', note);
+  }
+
+  /**
+   * Texto que la IA resume para el asesor: solo lo RECIENTE y sin lo que ya se resolvió.
+   * - Arranca después de la última nota de cierre (una atención anterior ya terminada).
+   * - De eso, solo los mensajes de hoy (hora de Colombia, UTC-5) — más los últimos 6 igual, para
+   *   no quedarse sin contexto si la charla empezó justo antes de la medianoche.
+   * - Un grupo junta los mensajes de todos sus participantes (cada uno tiene su conversación).
+   * Si no se puede leer el historial guardado, usa el que ya venía armado (conversationHistory).
+   */
+  private static async buildSummaryTranscript(
+    userId: number,
+    jid: string,
+    fallbackHistory: { role: string; content: string }[]
+  ): Promise<string> {
+    const fallback = () => fallbackHistory.map((m) => `${m.role === 'user' ? 'Cliente' : 'Bot'}: ${m.content}`).join('\n');
+    try {
+      const { ConversationService } = await import('./conversation.service.js');
+      type Line = { at: number; sender: string; text: string; author: string };
+      const lines: Line[] = [];
+
+      if (jid.endsWith('@g.us')) {
+        const conversations = await ConversationService.listByPhonePrefix(userId, jid.split('@')[0]);
+        for (const conv of conversations) {
+          const author = (conv.name || 'Participante').split(' · ')[0];
+          for (const m of (await ConversationService.getMessages(conv.id)) ?? []) {
+            lines.push({ at: new Date(m.createdAt).getTime(), sender: m.sender, text: m.text, author });
+          }
+        }
+      } else {
+        const phone = jid.split('@')[0];
+        const conv = await ConversationService.findOrCreateByPhone(phone, phone, userId, null);
+        for (const m of (await ConversationService.getMessages(conv.id)) ?? []) {
+          lines.push({ at: new Date(m.createdAt).getTime(), sender: m.sender, text: m.text, author: 'Cliente' });
+        }
+      }
+      lines.sort((a, b) => a.at - b.at);
+
+      // Lo que viene después de la última atención cerrada.
+      let start = 0;
+      lines.forEach((l, i) => {
+        if (l.text.startsWith(AdvisorService.RESOLVED_NOTE) || l.text.startsWith(AdvisorService.TIMEOUT_NOTE)) start = i + 1;
+      });
+      const pending = lines.slice(start);
+
+      // Medianoche de hoy en Colombia (UTC-5), en milisegundos UTC.
+      const colombiaNow = new Date(Date.now() - 5 * 3600_000);
+      const todayStart = Date.UTC(colombiaNow.getUTCFullYear(), colombiaNow.getUTCMonth(), colombiaNow.getUTCDate()) + 5 * 3600_000;
+      const recent = pending.filter((l, i) => l.at >= todayStart || i >= pending.length - 6).slice(-30);
+      if (recent.length === 0) return fallback();
+
+      return recent
+        .map((l) => `${l.sender === 'customer' ? l.author : l.sender === 'agent' ? 'Asesor' : 'Bot'}: ${l.text}`)
+        .join('\n');
+    } catch (err) {
+      console.error('⚠️ [AdvisorService] No se pudo leer el historial para el resumen — se usa el que ya venía armado:', err);
+      return fallback();
+    }
+  }
+
+  /** Encabezado del aviso al asesor: en un grupo, el nombre del grupo y quién lo pidió; en un
+   * chat individual, el nombre del cliente — siempre resaltados en negrita. */
+  private static async clientLabelLines(userId: number, jid: string, customerName: string, customerPhone?: string): Promise<string[]> {
+    if (jid.endsWith('@g.us')) {
+      const { BotContactService } = await import('./botContact.service.js');
+      const groupName = (await BotContactService.getName(userId, jid)) || 'Grupo';
+      const participantDigits = customerPhone?.includes('-') ? customerPhone.split('-').pop()!.replace(/[^0-9]/g, '') : '';
+      const participantPhone = participantDigits && looksLikePhoneDigits(participantDigits) ? ` (${participantDigits})` : '';
+      const lines = [`👥 Grupo: *${groupName}*`];
+      if (customerName && customerName !== groupName) lines.push(`🙋 Pidió: *${customerName}*${participantPhone}`);
+      return lines;
+    }
+    const digits = (customerPhone || jid.split('@')[0]).replace(/[^0-9]/g, '');
+    return [`👤 Cliente: *${customerName}* (${looksLikePhoneDigits(digits) ? digits : 'número oculto — usuario de WhatsApp'})`];
+  }
+
+  /** Última línea del aviso al asesor, con la palabra de cierre que tenga configurada la cuenta. */
+  private static async relayInstructionsLine(userId: number): Promise<string> {
+    const keyword = (await AdvisorService.getFinishKeywords(userId))[0] || 'FIN';
+    return `💬 Escribile por acá mismo y se lo reenvío — cuando termines, escribí ${keyword}.`;
+  }
+
+  /** Cuánto tiempo después de vencida se sigue avisando una atención cerrada por inactividad. Una
+   * más vieja (por ejemplo, las que ya estaban vencidas cuando se desplegó esto) se limpia sin
+   * mandarle nada a nadie, para no escribirle a un cliente horas o días después. */
+  static readonly TIMEOUT_NOTICE_MAX_AGE_MINUTES = 15;
+
+  /**
+   * Cierra las atenciones con asesor cuyo tiempo venció (reserva o inactividad del relay) — antes
+   * vencían en silencio: el cliente y el asesor no se enteraban. Ahora se hace lo mismo que al
+   * liberar a mano (aviso al cliente y al asesor, pausa de IA si está configurada, pasa al
+   * siguiente de la cola), con un texto que dice que fue por inactividad. Lo llama
+   * AdvisorQueueWorker en cada ciclo (una vez por minuto).
+   */
+  static async closeExpiredHandoffs(): Promise<void> {
+    const { BotContactService } = await import('./botContact.service.js');
+    const { WhatsappService } = await import('./whatsapp.service.js');
+    const expired = await BotContactService.listExpiredHandoffs();
+
+    for (const row of expired) {
+      try {
+        const ownerJid = WhatsappService.getOwnerJid(row.userId);
+        // Sesión de WhatsApp caída: se reintenta en el próximo ciclo, para no perder los avisos.
+        if (!ownerJid) continue;
+        // Reserva de un número anterior de esta cuenta: no hay a quién avisarle desde el actual.
+        if (row.ownerJid !== ownerJid) {
+          await BotContactService.clearHandoffById(row.id);
+          continue;
+        }
+        const ageMinutes = (Date.now() - row.expiresAt.getTime()) / 60_000;
+        if (ageMinutes > AdvisorService.TIMEOUT_NOTICE_MAX_AGE_MINUTES) {
+          await BotContactService.clearHandoffById(row.id);
+          trace('ATENCION_VENCIDA_SIN_AVISO', { usuario: row.userId, cliente: row.jid, minutosVencida: Math.round(ageMinutes) });
+          continue;
+        }
+        await AdvisorService.closeByTimeout(row.userId, row.jid, row.name, row.advisorId);
+      } catch (err) {
+        console.error(`⚠️ [AdvisorService] Error cerrando por inactividad la atención de ${row.jid}:`, err);
+      }
+    }
+  }
+
+  private static async closeByTimeout(userId: number, jid: string, clientName: string, advisorId: number): Promise<void> {
+    const { BotContactService } = await import('./botContact.service.js');
+    const { WhatsappService } = await import('./whatsapp.service.js');
+
+    await BotContactService.releaseHandoffReservationByJid(userId, jid);
+    await BotContactService.clearClosePending(userId, jid);
+    trace('ATENCION_CERRADA_POR_INACTIVIDAD', { usuario: userId, cliente: jid, asesorId: advisorId });
+
+    // Misma razón que en finishAdvisory: sin esta nota el pedido original queda "pendiente" en el
+    // historial y la IA vuelve a derivar apenas el cliente escribe cualquier cosa.
+    try {
+      await AdvisorService.markResolvedInHistory(userId, jid, AdvisorService.TIMEOUT_NOTE);
+    } catch (err) {
+      console.error('⚠️ [AdvisorService] No se pudo dejar la nota de cierre por inactividad en el historial:', err);
+    }
+
+    try {
+      await WhatsappService.sendTextMessage(
+        jid.split('@')[0],
+        'La atención con el asesor se cerró por inactividad. Si necesitás algo más, contame 🙂',
+        userId,
+        'cierre por inactividad→cliente'
+      );
+    } catch (err) {
+      console.error('⚠️ [AdvisorService] No se pudo avisarle al cliente del cierre por inactividad:', err);
+    }
+
+    const aiPauseMinutes = await AdvisorService.getAiPauseAfterCloseMinutes(userId);
+    if (aiPauseMinutes > 0) {
+      try {
+        await BotContactService.pauseAiFor(userId, jid, aiPauseMinutes);
+      } catch (err) {
+        console.error('⚠️ [AdvisorService] No se pudo pausar la IA post-cierre:', err);
+      }
+    }
+
+    await AdvisorService.markFreed(advisorId);
+    const advisor = await AdvisorService.getById(userId, advisorId);
+    if (!advisor) return;
+    try {
+      await AdvisorService.replyToAdvisor(userId, advisor, `⏱️ Se cerró tu atención con *${clientName || jid.split('@')[0]}* por inactividad.`);
+    } catch (err) {
+      console.error('⚠️ [AdvisorService] No se pudo avisarle al asesor del cierre por inactividad:', err);
+    }
+    try {
+      await AdvisorService.promoteNextFromQueue(userId, advisor);
+    } catch (err) {
+      console.error('⚠️ [AdvisorService] Error promoviendo el siguiente de la cola tras el cierre por inactividad:', err);
+    }
   }
 
   /** Le avisa al CLIENTE (o al grupo) que el asesor se fue y ya no está en la conversación — para

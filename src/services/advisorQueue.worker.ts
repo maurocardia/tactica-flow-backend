@@ -23,6 +23,9 @@ export class AdvisorQueueWorker {
       isProcessing = true;
 
       try {
+        // Primero se cierran las atenciones vencidas: libera a esos asesores para que el paso de
+        // promoción de abajo ya pueda asignarles al siguiente de la cola.
+        await AdvisorService.closeExpiredHandoffs();
         await AdvisorQueueWorker.sendDueReminders();
         await AdvisorQueueWorker.promoteFreeAdvisors();
       } catch (err) {
