@@ -330,6 +330,39 @@ router.put('/relay-inactivity-minutes', async (req: Request, res: Response) => {
   }
 });
 
+// Detección de "pide hablar con una persona" (ver handoffIntent.service.ts): frases que derivan
+// directo, palabras ambiguas que disparan la pregunta de aclaración, y el texto de esa pregunta.
+// Cualquiera de los tres puede venir vacío = volver al valor por default del código.
+const HANDOFF_INTENT_LIST_MAX_LEN = 1000;
+const HANDOFF_CLARIFY_QUESTION_MAX_LEN = 500;
+router.put('/handoff-intent-config', async (req: Request, res: Response) => {
+  const { explicitPhrases, ambiguousWords, clarifyQuestion } = req.body;
+  if (
+    typeof explicitPhrases !== 'string' || explicitPhrases.length > HANDOFF_INTENT_LIST_MAX_LEN ||
+    typeof ambiguousWords !== 'string' || ambiguousWords.length > HANDOFF_INTENT_LIST_MAX_LEN ||
+    typeof clarifyQuestion !== 'string' || clarifyQuestion.length > HANDOFF_CLARIFY_QUESTION_MAX_LEN
+  ) {
+    return res.status(400).json({
+      error: `"explicitPhrases" y "ambiguousWords" deben ser texto de hasta ${HANDOFF_INTENT_LIST_MAX_LEN} caracteres, y "clarifyQuestion" de hasta ${HANDOFF_CLARIFY_QUESTION_MAX_LEN}`
+    });
+  }
+
+  try {
+    const user = await AuthService.setHandoffIntentConfig(req.user!.id, {
+      explicitPhrases: explicitPhrases.trim(),
+      ambiguousWords: ambiguousWords.trim(),
+      clarifyQuestion: clarifyQuestion.trim()
+    });
+    res.json({
+      handoffExplicitPhrases: user?.handoffExplicitPhrases ?? explicitPhrases.trim(),
+      handoffAmbiguousWords: user?.handoffAmbiguousWords ?? ambiguousWords.trim(),
+      handoffClarifyQuestion: user?.handoffClarifyQuestion ?? clarifyQuestion.trim()
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar la detección de pedido de asesor' });
+  }
+});
+
 // Palabra(s) clave para que el asesor cierre la atención (antes fija: "FIN"/"LISTO") — lista
 // separada por comas, ver AdvisorService.getFinishKeywords.
 const FINISH_KEYWORDS_MAX_LEN = 200;

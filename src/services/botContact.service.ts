@@ -393,6 +393,48 @@ export class BotContactService {
     );
   }
 
+  /** Estado de la pregunta "¿querés hablar con una persona?" de esta conversación (ver
+   * handoffIntent.service.ts y BotEngineService). */
+  static async getClarifyState(
+    userId: number,
+    jid: string
+  ): Promise<{ pendingAt: Date | null; originalText: string | null; declinedAt: Date | null }> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query(
+      `SELECT handoff_clarify_pending_at, handoff_clarify_original_text, handoff_clarify_declined_at
+       FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
+      [userId, ownerJid, jid]
+    );
+    if (rows.length === 0) return { pendingAt: null, originalText: null, declinedAt: null };
+    return {
+      pendingAt: rows[0].handoff_clarify_pending_at ? new Date(rows[0].handoff_clarify_pending_at) : null,
+      originalText: rows[0].handoff_clarify_original_text ?? null,
+      declinedAt: rows[0].handoff_clarify_declined_at ? new Date(rows[0].handoff_clarify_declined_at) : null,
+    };
+  }
+
+  /** Marca que se le hizo la pregunta de aclaración y guarda el mensaje que la disparó. */
+  static async setClarifyPending(userId: number, jid: string, originalText: string): Promise<void> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    await db.query(
+      `UPDATE bot_contacts SET handoff_clarify_pending_at = now(), handoff_clarify_original_text = $4
+       WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
+      [userId, ownerJid, jid, originalText]
+    );
+  }
+
+  /** Cierra la pregunta de aclaración. `declined` = el cliente eligió seguir sin una persona (o
+   * contestó otra cosa): se guarda la hora para no volver a preguntarle por un rato. */
+  static async clearClarifyPending(userId: number, jid: string, declined: boolean): Promise<void> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    await db.query(
+      `UPDATE bot_contacts SET handoff_clarify_pending_at = NULL, handoff_clarify_original_text = NULL,
+         handoff_clarify_declined_at = CASE WHEN $4 THEN now() ELSE handoff_clarify_declined_at END
+       WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
+      [userId, ownerJid, jid, declined]
+    );
+  }
+
   static async isClosePending(userId: number, jid: string): Promise<boolean> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';
     const { rows } = await db.query(

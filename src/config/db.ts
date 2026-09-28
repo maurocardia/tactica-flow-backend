@@ -428,6 +428,22 @@ const SCHEMA_SQL = `
   -- pendiente. El valor en sí (el timestamp) no se usa para nada más que "existe o no existe".
   ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS handoff_close_pending_at TIMESTAMPTZ;
 
+  -- Detección de "pide hablar con una persona" sin depender de la IA (ver
+  -- handoffIntent.service.ts): frases que derivan directo, palabras ambiguas que disparan una
+  -- pregunta de aclaración, y el texto de esa pregunta. Listas separadas por comas; vacío = usar
+  -- los valores por default del código. Configurables en el panel "Asesores humanos".
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS handoff_explicit_phrases TEXT NOT NULL DEFAULT '';
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS handoff_ambiguous_words TEXT NOT NULL DEFAULT '';
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS handoff_clarify_question TEXT NOT NULL DEFAULT '';
+
+  -- Estado de la pregunta de aclaración por conversación: cuándo se hizo (NULL = no hay ninguna
+  -- pendiente), el mensaje original que la disparó (para responderlo si el cliente elige "seguir
+  -- con mi consulta" sin que tenga que repetirlo), y cuándo eligió seguir (para no volver a
+  -- preguntarle por un rato, ver CLARIFY_COOLDOWN_MINUTES).
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS handoff_clarify_pending_at TIMESTAMPTZ;
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS handoff_clarify_original_text TEXT;
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS handoff_clarify_declined_at TIMESTAMPTZ;
+
   -- Vencimiento de la pausa de IA post-cierre (ver ai_pause_after_advisor_minutes arriba) — NULL o
   -- vencido = la IA responde normal. Columna aparte de handoff_expires_at porque describe un
   -- estado distinto (ya NO hay asesor asignado, la IA está muda igual por un rato).

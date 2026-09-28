@@ -106,6 +106,11 @@ export interface User {
   /** Palabra(s) que el asesor escribe para cerrar la atención — lista separada por comas
    * (case-insensitive), ver AdvisorService.getFinishKeywords. Default 'FIN,LISTO'. */
   advisorFinishKeywords: string;
+  /** Detección de pedido de asesor (ver handoffIntent.service.ts) — listas separadas por comas y
+   * texto de la pregunta de aclaración. Vacío = valores por default del código. */
+  handoffExplicitPhrases: string;
+  handoffAmbiguousWords: string;
+  handoffClarifyQuestion: string;
   /** Minutos que la IA queda muda para un cliente DESPUÉS de que se cierra su atención humana —
    * 0 = reactivar de inmediato. Ver AdvisorService.getAiPauseAfterCloseMinutes. */
   aiPauseAfterAdvisorMinutes: number;
@@ -141,6 +146,9 @@ function mapUserRow(row: any): User {
     queueReminderSeconds: row.queue_reminder_seconds,
     relayInactivityMinutes: row.relay_inactivity_minutes,
     advisorFinishKeywords: row.advisor_finish_keywords,
+    handoffExplicitPhrases: row.handoff_explicit_phrases ?? '',
+    handoffAmbiguousWords: row.handoff_ambiguous_words ?? '',
+    handoffClarifyQuestion: row.handoff_clarify_question ?? '',
     aiPauseAfterAdvisorMinutes: row.ai_pause_after_advisor_minutes,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
@@ -274,6 +282,19 @@ export class AuthService {
     const { rows } = await db.query(
       `UPDATE users SET relay_inactivity_minutes = $1, updated_at = now() WHERE id = $2 RETURNING *`,
       [minutes, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setHandoffIntentConfig(
+    id: number,
+    config: { explicitPhrases: string; ambiguousWords: string; clarifyQuestion: string }
+  ): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET handoff_explicit_phrases = $1, handoff_ambiguous_words = $2, handoff_clarify_question = $3,
+         updated_at = now() WHERE id = $4 RETURNING *`,
+      [config.explicitPhrases, config.ambiguousWords, config.clarifyQuestion, id]
     );
     if (rows.length === 0) return null;
     return mapUserRow(rows[0]);
