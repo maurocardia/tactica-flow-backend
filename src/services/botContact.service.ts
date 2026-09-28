@@ -259,6 +259,44 @@ export class BotContactService {
     );
   }
 
+  /** Nombre guardado de una conversación (en un grupo, el nombre del grupo). null si no existe. */
+  static async getName(userId: number, jid: string): Promise<string | null> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query(
+      `SELECT name FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
+      [userId, ownerJid, jid]
+    );
+    return rows.length > 0 ? rows[0].name ?? null : null;
+  }
+
+  /** Atenciones con asesor cuyo tiempo ya venció pero todavía no se cerraron (siguen con
+   * handoff_advisor_id) — de TODAS las cuentas. Las procesa AdvisorService.closeExpiredHandoffs. */
+  static async listExpiredHandoffs(): Promise<
+    { id: number; userId: number; ownerJid: string; jid: string; name: string; advisorId: number; expiresAt: Date }[]
+  > {
+    const { rows } = await db.query(
+      `SELECT id, user_id, owner_jid, jid, name, handoff_advisor_id, handoff_expires_at FROM bot_contacts
+       WHERE handoff_advisor_id IS NOT NULL AND handoff_expires_at IS NOT NULL AND handoff_expires_at <= now()`
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      userId: r.user_id,
+      ownerJid: r.owner_jid,
+      jid: r.jid,
+      name: r.name,
+      advisorId: r.handoff_advisor_id,
+      expiresAt: new Date(r.handoff_expires_at),
+    }));
+  }
+
+  /** Limpia una reserva vencida por id de fila, sin avisar a nadie (ver closeExpiredHandoffs). */
+  static async clearHandoffById(id: number): Promise<void> {
+    await db.query(
+      `UPDATE bot_contacts SET handoff_expires_at = NULL, handoff_advisor_id = NULL, handoff_close_pending_at = NULL WHERE id = $1`,
+      [id]
+    );
+  }
+
   /** Botón "Liberar asesor" del panel — misma decisión que releaseHandoffReservationByJid, pero
    * direccionado por el id de fila (lo que el panel tiene a mano) en vez del jid. Devuelve también
    * si HABÍA una reserva vigente antes de limpiarla (con el CTE "prev", capturado antes del
