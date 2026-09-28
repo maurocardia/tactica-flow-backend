@@ -106,6 +106,10 @@ export class BotEngineService {
 
     // 2. Evaluar Reglas por Palabras Clave (Keyword Triggers) - Legacy/Global
     for (const rule of await KeywordRuleService.listActiveRules()) {
+      // Modo "Solo IA": las reglas de respuesta fija (ej. el "Saludo de bienvenida" que se siembra
+      // en una base nueva, que matchea cualquier "hola") no deben ganarle a la IA ni a la
+      // detección de pedido de asesor — solo quedan las reglas que justamente llaman a la IA.
+      if (botMode === 'ai_only' && rule.action !== 'CALL_AI') continue;
       const matched = rule.keywords.some(kw => textLower.includes(kw));
       if (matched) {
         console.log(`🤖 [BOT ENGINE] Regla activada por palabra clave: ${rule.id} (${rule.name}, acción: ${rule.action})`);
