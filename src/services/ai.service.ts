@@ -370,7 +370,11 @@ export class AIService {
     aiModel: string = '',
     userId?: number,
     customerPhone?: string,
-    customerName?: string
+    customerName?: string,
+    // allowHandoff: false saca la tool handoff_to_advisor de esta llamada — para cuando el cliente
+    // acaba de elegir explícitamente NO hablar con una persona (ver BotEngineService, pregunta de
+    // aclaración): sin esto la IA podía volver a derivarlo igual con el mismo mensaje.
+    options: { allowHandoff?: boolean } = {}
   ): Promise<{ text: string; handoffAdvisor?: Advisor }> {
     const { model, providerLabel, hasApiKey } = resolveModel(aiProvider, aiModel);
 
@@ -411,7 +415,7 @@ export class AIService {
       // derivación a asesor (Issue #30): sin userId+customerPhone no hay a quién derivar ni
       // desde qué sesión de WhatsApp, así que la tool ni se ofrece.
       const hasTacticaCreds = !!(tacticaCredentials.usuario && tacticaCredentials.contrasena);
-      const canHandoff = mode === 'bot' && !!userId && !!customerPhone;
+      const canHandoff = mode === 'bot' && !!userId && !!customerPhone && options.allowHandoff !== false;
 
       const result = await generateTextWithRetry({
         model,
@@ -452,7 +456,7 @@ export class AIService {
       if (handoffOutcome.advisor) {
         const text = handoffOutcome.alreadyPending
           ? `Ya te había comunicado con ${handoffOutcome.advisor.name}, nuestro asesor — en breve te responde. Si necesitás algo más mientras tanto, contame.`
-          : `Perfecto, te estoy comunicando con ${handoffOutcome.advisor.name}, nuestro asesor. En breve te contacta para ayudarte, y cuando terminemos te voy a preguntar si quedó resuelta tu consulta.`;
+          : `Perfecto, te estoy comunicando con ${handoffOutcome.advisor.name}, nuestro asesor. En breve te contacta para ayudarte.`;
         return { text, handoffAdvisor: handoffOutcome.advisor };
       }
       if (handoffOutcome.queuePosition !== undefined) {
