@@ -450,6 +450,11 @@ const SCHEMA_SQL = `
   -- estado distinto (ya NO hay asesor asignado, la IA está muda igual por un rato).
   ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS ai_paused_until TIMESTAMPTZ;
 
+  -- Cuándo ARRANCÓ esa pausa (el cierre de la atención) — para poder recalcular ai_paused_until
+  -- si la cuenta cambia ai_pause_after_advisor_minutes con pausas ya en curso (ver
+  -- BotContactService.rescheduleAiPauses). NULL en pausas anteriores a esta columna.
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS ai_paused_at TIMESTAMPTZ;
+
   -- Adjuntos multimedia de los bloques de flujo (Enviar Imagen/Video/Audio/Documento). Los bytes
   -- se guardan acá y se cargan en proceso para pasárselos a Baileys como Buffer — así no hace
   -- falta exponer una URL pública ni que el backend sea alcanzable desde internet.

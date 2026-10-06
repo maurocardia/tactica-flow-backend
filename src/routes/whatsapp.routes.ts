@@ -401,9 +401,23 @@ router.put('/ai-pause-after-advisor-minutes', async (req: Request, res: Response
 
   try {
     const user = await AuthService.setAiPauseAfterAdvisorMinutes(req.user!.id, minutes);
+    // Las pausas que ya estaban corriendo pasan a regirse por el valor nuevo (ver
+    // BotContactService.rescheduleAiPauses) — si no, seguían esperando el tiempo viejo.
+    await BotContactService.rescheduleAiPauses(req.user!.id, minutes);
     res.json({ aiPauseAfterAdvisorMinutes: user?.aiPauseAfterAdvisorMinutes ?? minutes });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al actualizar la pausa de IA post-atención' });
+  }
+});
+
+// Botón "Reactivar IA ahora" del panel de Asesores: levanta YA todas las pausas de IA
+// post-atención en curso de la cuenta, sin tocar el valor configurado para las próximas.
+router.post('/ai-pause/clear', async (req: Request, res: Response) => {
+  try {
+    const cleared = await BotContactService.clearAiPauses(req.user!.id);
+    res.json({ cleared });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al reactivar la IA' });
   }
 });
 

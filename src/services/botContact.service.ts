@@ -451,10 +451,39 @@ export class BotContactService {
   static async pauseAiFor(userId: number, jid: string, minutes: number): Promise<void> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';
     await db.query(
-      `UPDATE bot_contacts SET ai_paused_until = now() + ($1 || ' minutes')::interval
+      `UPDATE bot_contacts SET ai_paused_at = now(), ai_paused_until = now() + ($1 || ' minutes')::interval
        WHERE user_id = $2 AND owner_jid = $3 AND jid = $4`,
       [minutes, userId, ownerJid, jid]
     );
+  }
+
+  /** La cuenta cambió la "Pausa de IA post-atención" con pausas ya en curso: se recalculan con el
+   * valor nuevo contando desde el cierre de cada atención (ai_paused_at), en vez de dejarlas
+   * esperando el tiempo viejo — bajar de 60 a 1 minuto reactiva ya a quien cerró hace más de un
+   * minuto. Una pausa anterior a la columna ai_paused_at (NULL) solo se acorta, nunca se alarga.
+   * `minutes <= 0` las levanta todas. Devuelve cuántas tocó. */
+  static async rescheduleAiPauses(userId: number, minutes: number): Promise<number> {
+    if (minutes <= 0) return BotContactService.clearAiPauses(userId);
+    const { rowCount } = await db.query(
+      `UPDATE bot_contacts
+       SET ai_paused_until = COALESCE(
+         ai_paused_at + ($1 || ' minutes')::interval,
+         LEAST(ai_paused_until, now() + ($1 || ' minutes')::interval)
+       )
+       WHERE user_id = $2 AND ai_paused_until > now()`,
+      [minutes, userId]
+    );
+    return rowCount ?? 0;
+  }
+
+  /** Botón "Reactivar IA ahora" del panel de Asesores: levanta todas las pausas de IA post-atención
+   * en curso de esta cuenta, sin esperar a que venzan. Devuelve cuántas levantó. */
+  static async clearAiPauses(userId: number): Promise<number> {
+    const { rowCount } = await db.query(
+      `UPDATE bot_contacts SET ai_paused_until = NULL WHERE user_id = $1 AND ai_paused_until > now()`,
+      [userId]
+    );
+    return rowCount ?? 0;
   }
 
   static async isAiPaused(userId: number, jid: string): Promise<boolean> {
