@@ -1071,6 +1071,7 @@ return connectPromise;
       return;
     }
 
+
     // Relay: si este cliente (o GRUPO — ver más abajo) tiene un asesor en relay activo (el asesor
     // le escribió "FIN"/la palabra de cierre configurada todavía no — ver AdvisorService.
     // handleAdvisorCommand, que reenvía los mensajes DEL asesor hacia acá), el mensaje se le pasa
@@ -1163,6 +1164,24 @@ return connectPromise;
       }
     } catch (err) {
       console.error('⚠️ [WhatsApp] Error chequeando relay de asesor activo:', err);
+    }
+
+    // Un asesor activo es alguien del equipo, no un cliente: el bot no le contesta nada (ni flujo,
+    // ni reglas, ni IA), ni en su chat individual ni cuando escribe en un grupo (ej. un asesor
+    // preguntándole algo a otro) — mismo efecto que la Blacklist, pero sin tener que cargarlo ahí,
+    // y deja de aplicar apenas se lo desactiva o borra como asesor. Va DESPUÉS del relay a
+    // propósito: el puente de una atención en curso tiene que seguir funcionando igual.
+    const senderDigits = (senderJid || '').split('@')[0].replace(/[^0-9]/g, '');
+    if (senderDigits) {
+      try {
+        const { AdvisorService } = await import('./advisor.service.js');
+        if (await AdvisorService.findByPhone(userId, senderDigits)) {
+          trace('SIN_RESPUESTA', { usuario: userId, cliente: phone, msgId: msg.key?.id, motivo: 'el que escribe es un asesor' });
+          return;
+        }
+      } catch (err) {
+        console.error('⚠️ [WhatsApp] Error chequeando si el que escribe es un asesor:', err);
+      }
     }
 
     // Archivo sin una atención humana activa: se ignora como siempre (el bot no interpreta imágenes,

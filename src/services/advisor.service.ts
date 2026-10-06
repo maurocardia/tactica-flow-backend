@@ -866,8 +866,9 @@ export class AdvisorService {
     const { BotContactService } = await import('./botContact.service.js');
     const activeClient = await BotContactService.getActiveClientForAdvisor(userId, advisor.id);
     if (!activeClient) {
-      // El que escribe ES un asesor, pero no tiene cliente asignado ahora: el mensaje sigue el
-      // camino normal (el bot le contesta como a cualquier contacto) y NO se reenvía a nadie.
+      // El que escribe ES un asesor, pero no tiene cliente asignado ahora: NO se reenvía a nadie y
+      // el mensaje sigue de largo solo para guardarse en la conversación — el bot no le contesta
+      // (ver el chequeo "el que escribe es un asesor" en WhatsappService.handleIncomingMessage).
       trace('ASESOR_SIN_CLIENTE_ACTIVO', { usuario: userId, asesor: advisor.name, asesorTel: phone, texto: preview(text) });
       return false;
     }
