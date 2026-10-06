@@ -14,6 +14,7 @@ import { KeywordRuleService } from './services/keywordRule.service.js';
 import { SchedulerWorker } from './services/scheduler.worker.js';
 import { AdvisorQueueWorker } from './services/advisorQueue.worker.js';
 import { WhatsappService } from './services/whatsapp.service.js';
+import { EmergencyStopService } from './services/emergencyStop.service.js';
 
 dotenv.config();
 
@@ -75,6 +76,9 @@ async function start() {
   try {
     await initDatabase();
     await Promise.all([ConversationService.seedIfEmpty(), KeywordRuleService.seedIfEmpty()]);
+    // Antes de arrancar workers y reconectar sesiones: una parada de emergencia activa tiene que
+    // seguir cortando los envíos después de un reinicio.
+    await EmergencyStopService.loadFromDb();
     // Iniciar worker de mensajes programados
     SchedulerWorker.start(30000);
     // Recordatorios de posición en la cola de asesores + promoción automática al liberarse un

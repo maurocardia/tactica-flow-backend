@@ -114,6 +114,11 @@ export interface User {
   /** Minutos que la IA queda muda para un cliente DESPUÉS de que se cierra su atención humana —
    * 0 = reactivar de inmediato. Ver AdvisorService.getAiPauseAfterCloseMinutes. */
   aiPauseAfterAdvisorMinutes: number;
+  /** false = no se cuentan las derivaciones por asesor y se reparte siguiendo el orden de la
+   * lista — ver AdvisorService.pickFreeAdvisor. */
+  advisorCounterEnabled: boolean;
+  /** Parada de emergencia activa: la cuenta no manda nada automático — ver EmergencyStopService. */
+  emergencyStop: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -150,6 +155,8 @@ function mapUserRow(row: any): User {
     handoffAmbiguousWords: row.handoff_ambiguous_words ?? '',
     handoffClarifyQuestion: row.handoff_clarify_question ?? '',
     aiPauseAfterAdvisorMinutes: row.ai_pause_after_advisor_minutes,
+    advisorCounterEnabled: row.advisor_counter_enabled ?? true,
+    emergencyStop: row.emergency_stop ?? false,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -304,6 +311,24 @@ export class AuthService {
     const { rows } = await db.query(
       `UPDATE users SET advisor_finish_keywords = $1, updated_at = now() WHERE id = $2 RETURNING *`,
       [keywords, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setAdvisorCounterEnabled(id: number, enabled: boolean): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET advisor_counter_enabled = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [enabled, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setEmergencyStop(id: number, active: boolean): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET emergency_stop = $1, updated_at = now() WHERE id = $2 RETURNING *`,
+      [active, id]
     );
     if (rows.length === 0) return null;
     return mapUserRow(rows[0]);

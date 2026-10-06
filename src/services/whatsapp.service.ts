@@ -12,6 +12,7 @@ import { usePostgresAuthState } from './postgresAuthState.js';
 import { FlowMediaService } from './flowMedia.service.js';
 import { HandoffService } from './handoff.service.js';
 import { FlowEngineService } from './flowEngine.service.js';
+import { EmergencyStopService } from './emergencyStop.service.js';
 import { FlowOutboundMessage } from '../types/flow.js';
 import { looksLikePhoneDigits } from '../utils/whatsappIdentity.js';
 import { trace, preview } from '../utils/trace.js';
@@ -413,6 +414,12 @@ async function sendFlowMessages(
   let mentionedFirstText = false;
 
   for (const message of messages) {
+    // Parada de emergencia activada con esta respuesta ya en camino (delay humanizado, pausas del
+    // flujo): se corta acá, antes de cada mensaje, en vez de terminar de mandar la cadena.
+    if (EmergencyStopService.isActive(userId)) {
+      trace('ENVIO_BLOQUEADO', { usuario: userId, para: remoteJid, motivo: 'parada de emergencia' });
+      return;
+    }
     if (message.kind === 'delay') {
       const seconds = Math.min(Math.max(message.seconds, 0), 30);
       try {
@@ -460,6 +467,7 @@ async function sendFlowMessages(
 FlowEngineService.setProactiveSender(async (ctx) => {
   const session = sessions.get(ctx.userId);
   if (!session || session.status !== 'connected') return;
+  if (EmergencyStopService.isActive(ctx.userId)) return;
 
   // Mismo chequeo que handleIncomingMessage antes de responder — si el usuario bloqueó al
   // contacto o apagó el bot DESDE que se armó este temporizador, no corresponde mandarle nada igual.
@@ -1006,7 +1014,11 @@ return connectPromise;
       texto: preview(text)
     });
 
-    if (!isGroup && !fromMe) {
+    // Parada de emergencia: el mensaje se sigue guardando más abajo, pero no se procesa nada (ni
+    // comandos de asesor, ni puente, ni bot) — ver EmergencyStopService.
+    const emergencyStopped = EmergencyStopService.isActive(userId);
+
+    if (!isGroup && !fromMe && !emergencyStopped) {
       try {
         const { AdvisorService } = await import('./advisor.service.js');
         // Si el asesor deslizó para responderle a un mensaje del puente, viene el id de ESE mensaje.
@@ -1049,6 +1061,11 @@ return connectPromise;
     if (inbound) {
       io.to(`chat_${conversation.id}`).emit('new_message', inbound.message);
       io.emit('conversation_updated', inbound.conversation);
+    }
+
+    if (emergencyStopped) {
+      trace('SIN_RESPUESTA', { usuario: userId, cliente: phone, msgId: msg.key?.id, motivo: 'parada de emergencia activa' });
+      return;
     }
 
     // Cancelar mensajes programados si el contacto respondió
@@ -1260,6 +1277,13 @@ return connectPromise;
       await humanDelay(socket, remoteJid, botResult.replyText, user.botReplyDelayMinMs, user.botReplyDelayMaxMs);
     }
 
+    // La parada de emergencia pudo activarse mientras la IA armaba esta respuesta o durante el
+    // delay: no se manda ni se registra como enviada.
+    if (EmergencyStopService.isActive(userId)) {
+      trace('SIN_RESPUESTA', { usuario: userId, cliente: phone, msgId: msg.key?.id, motivo: 'parada de emergencia activa (respuesta descartada)' });
+      return;
+    }
+
     await sendFlowMessages(userId, socket, remoteJid, botResult.messages, { isGroup, participantJid });
 
     try {
@@ -1399,6 +1423,10 @@ return connectPromise;
     }
 
     const jid = this.phoneToJid(phone);
+    if (EmergencyStopService.isActive(userId)) {
+      trace('ENVIO_BLOQUEADO', { ruta: route, para: jid, usuario: userId, motivo: 'parada de emergencia' });
+      throw new Error(EmergencyStopService.BLOCKED_MESSAGE);
+    }
     if (!targetSession || targetSession.status !== 'connected') {
       trace('ENVIO_SIN_SESION', { ruta: route, para: jid, usuario: userId, estado: targetSession?.status || 'sin sesión' });
       throw new Error('No hay una sesión de WhatsApp conectada para enviar el mensaje.');
@@ -1434,6 +1462,10 @@ return connectPromise;
   ): Promise<string[]> {
     const session = sessions.get(userId);
     const jid = this.phoneToJid(phone);
+    if (EmergencyStopService.isActive(userId)) {
+      trace('ENVIO_BLOQUEADO', { ruta: route, para: jid, usuario: userId, motivo: 'parada de emergencia' });
+      throw new Error(EmergencyStopService.BLOCKED_MESSAGE);
+    }
     if (!session || session.status !== 'connected') {
       trace('ENVIO_SIN_SESION', { ruta: route, para: jid, usuario: userId, estado: session?.status || 'sin sesión' });
       throw new Error('No hay una sesión de WhatsApp conectada para enviar el archivo.');

@@ -455,6 +455,16 @@ const SCHEMA_SQL = `
   -- BotContactService.rescheduleAiPauses). NULL en pausas anteriores a esta columna.
   ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS ai_paused_at TIMESTAMPTZ;
 
+  -- Contador de derivaciones por asesor (columna "Derivaciones" del panel): con esto en false no
+  -- se cuenta ni se usa para repartir — la derivación sigue el orden de la lista y listo (ver
+  -- AdvisorService.pickFreeAdvisor/pickNextAdvisor). Para equipos donde una atención larga no
+  -- significa trabajar menos (soporte técnico), a diferencia de ventas.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS advisor_counter_enabled BOOLEAN NOT NULL DEFAULT true;
+
+  -- Parada de emergencia: con esto en true la cuenta no manda NADA automático (bot, flujos,
+  -- puente con asesores, cola, programados) — ver EmergencyStopService.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS emergency_stop BOOLEAN NOT NULL DEFAULT false;
+
   -- Adjuntos multimedia de los bloques de flujo (Enviar Imagen/Video/Audio/Documento). Los bytes
   -- se guardan acá y se cargan en proceso para pasárselos a Baileys como Buffer — así no hace
   -- falta exponer una URL pública ni que el backend sea alcanzable desde internet.

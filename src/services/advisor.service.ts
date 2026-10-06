@@ -32,9 +32,21 @@ function mapRow(row: any): Advisor {
   };
 }
 
+// Contador de derivaciones apagado (users.advisor_counter_enabled = false, ver panel de
+// Asesores): no se suma nada y el reparto es por orden de lista, sin mirar cuántos casos atendió
+// cada uno. $1 es siempre el userId en las consultas que usan estos fragmentos.
+const COUNT_INCREMENT_SQL = `(CASE WHEN (SELECT advisor_counter_enabled FROM users WHERE id = $1) THEN 1 ELSE 0 END)`;
+// Desempate final, y criterio principal con el contador apagado (los CASE de más arriba dan NULL
+// para todos): al que hace más que no le toca, y entre los que nunca recibieron, el orden de la
+// lista del panel (alfabético, igual que AdvisorService.list) — o sea una ronda en ese orden que
+// saltea a los ocupados.
+const LIST_ORDER_SQL = `a.last_handoff_at ASC NULLS FIRST, lower(a.name) ASC, a.id ASC`;
+
 export class AdvisorService {
   static async list(userId: number): Promise<Advisor[]> {
-    const { rows } = await db.query('SELECT * FROM advisors WHERE user_id = $1 ORDER BY name ASC', [userId]);
+    // lower(name), id: mismo orden que LIST_ORDER_SQL — lo que se ve en el panel es el orden en
+    // que se van asignando con el contador apagado.
+    const { rows } = await db.query('SELECT * FROM advisors WHERE user_id = $1 ORDER BY lower(name) ASC, id ASC', [userId]);
     return rows.map(mapRow);
   }
 
@@ -102,13 +114,13 @@ export class AdvisorService {
    */
   static async pickNextAdvisor(userId: number): Promise<Advisor | null> {
     const { rows } = await db.query(
-      `UPDATE advisors SET handoff_count = handoff_count + 1, last_handoff_at = now()
+      `UPDATE advisors SET handoff_count = handoff_count + ${COUNT_INCREMENT_SQL}, last_handoff_at = now()
        WHERE id = (
-         SELECT id FROM advisors
-         WHERE user_id = $1 AND is_active = true
-         ORDER BY handoff_count ASC, last_handoff_at ASC NULLS FIRST, id ASC
+         SELECT a.id FROM advisors a JOIN users u ON u.id = a.user_id
+         WHERE a.user_id = $1 AND a.is_active = true
+         ORDER BY (CASE WHEN u.advisor_counter_enabled THEN a.handoff_count END) ASC NULLS FIRST, ${LIST_ORDER_SQL}
          LIMIT 1
-         FOR UPDATE SKIP LOCKED
+         FOR UPDATE OF a SKIP LOCKED
        )
        RETURNING *`,
       [userId]
@@ -126,17 +138,19 @@ export class AdvisorService {
    */
   static async pickFreeAdvisor(userId: number): Promise<Advisor | null> {
     const { rows } = await db.query(
-      `UPDATE advisors SET handoff_count = handoff_count + 1, last_handoff_at = now()
+      `UPDATE advisors SET handoff_count = handoff_count + ${COUNT_INCREMENT_SQL}, last_handoff_at = now()
        WHERE id = (
-         SELECT a.id FROM advisors a
+         SELECT a.id FROM advisors a JOIN users u ON u.id = a.user_id
          WHERE a.user_id = $1 AND a.is_active = true
            AND NOT EXISTS (
              SELECT 1 FROM bot_contacts bc
              WHERE bc.handoff_advisor_id = a.id AND bc.handoff_expires_at > now()
            )
-         ORDER BY a.freed_at ASC NULLS FIRST, a.handoff_count ASC, a.last_handoff_at ASC NULLS FIRST, a.id ASC
+         ORDER BY (CASE WHEN u.advisor_counter_enabled THEN a.freed_at END) ASC NULLS FIRST,
+                  (CASE WHEN u.advisor_counter_enabled THEN a.handoff_count END) ASC NULLS FIRST,
+                  ${LIST_ORDER_SQL}
          LIMIT 1
-         FOR UPDATE SKIP LOCKED
+         FOR UPDATE OF a SKIP LOCKED
        )
        RETURNING *`,
       [userId]
@@ -154,7 +168,9 @@ export class AdvisorService {
    * ya cuenta la suya propia atómicamente, así que esto NO se llama después de esa. */
   static async recordHandoff(id: number): Promise<Advisor | null> {
     const { rows } = await db.query(
-      `UPDATE advisors SET handoff_count = handoff_count + 1, last_handoff_at = now() WHERE id = $1 RETURNING *`,
+      `UPDATE advisors SET last_handoff_at = now(),
+         handoff_count = handoff_count + (CASE WHEN (SELECT advisor_counter_enabled FROM users WHERE id = advisors.user_id) THEN 1 ELSE 0 END)
+       WHERE id = $1 RETURNING *`,
       [id]
     );
     return rows.length > 0 ? mapRow(rows[0]) : null;

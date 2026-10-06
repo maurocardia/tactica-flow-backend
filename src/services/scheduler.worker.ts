@@ -1,6 +1,7 @@
 import { ScheduledJobService } from './scheduledJob.service.js';
 import { WhatsappService } from './whatsapp.service.js';
 import { io } from '../server.js';
+import { EmergencyStopService } from './emergencyStop.service.js';
 
 let intervalRef: NodeJS.Timeout | null = null;
 let isProcessing = false;
@@ -23,6 +24,13 @@ export class SchedulerWorker {
         }
 
         for (const job of dueJobs) {
+          // Parada de emergencia: lo que vence mientras está activa NO queda pendiente para
+          // mandarse de golpe al reactivar — se marca como fallido, a la vista en el panel.
+          if (EmergencyStopService.isActive(job.user_id)) {
+            await ScheduledJobService.markFailed(job.id, EmergencyStopService.BLOCKED_MESSAGE);
+            io.emit('scheduled_job_updated', { id: job.id, status: 'failed', error: EmergencyStopService.BLOCKED_MESSAGE });
+            continue;
+          }
           try {
             await WhatsappService.sendTextMessage(job.phone, job.message_text, job.user_id || undefined);
             await ScheduledJobService.markSent(job.id, job.recurrence, new Date(job.execute_at));

@@ -5,6 +5,8 @@ import { AuthService, AiPromptSections, AiGeneralRules, BotMode } from '../servi
 import { BotContactService, UNLIMITED_RESERVATION_MINUTES } from '../services/botContact.service.js';
 import { AdvisorService } from '../services/advisor.service.js';
 import { FlowMediaService } from '../services/flowMedia.service.js';
+import { EmergencyStopService } from '../services/emergencyStop.service.js';
+import { ConfigTransferService } from '../services/configTransfer.service.js';
 import { authMiddleware } from '../middleware/auth.middleware.js';
 import { io } from '../server.js';
 
@@ -418,6 +420,65 @@ router.post('/ai-pause/clear', async (req: Request, res: Response) => {
     res.json({ cleared });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al reactivar la IA' });
+  }
+});
+
+// Prende/apaga el contador de derivaciones por asesor — apagado, se reparte por orden de lista
+// sin mirar cuántos casos atendió cada uno (ver AdvisorService.pickFreeAdvisor).
+router.put('/advisor-counter-enabled', async (req: Request, res: Response) => {
+  const { enabled } = req.body;
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ error: 'El campo "enabled" es obligatorio y debe ser booleano' });
+  }
+
+  try {
+    const user = await AuthService.setAdvisorCounterEnabled(req.user!.id, enabled);
+    res.json({ advisorCounterEnabled: user?.advisorCounterEnabled ?? enabled });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar el contador de derivaciones' });
+  }
+});
+
+// Parada de emergencia (botón rojo de Configuración) — ver EmergencyStopService para qué corta y
+// qué limpia al activarse. Desactivarla solo vuelve a habilitar los envíos, no restaura nada.
+router.put('/emergency-stop', async (req: Request, res: Response) => {
+  const { active } = req.body;
+  if (typeof active !== 'boolean') {
+    return res.status(400).json({ error: 'El campo "active" es obligatorio y debe ser booleano' });
+  }
+
+  try {
+    if (active) {
+      const cleanup = await EmergencyStopService.activate(req.user!.id);
+      return res.json({ emergencyStop: true, cleanup });
+    }
+    await EmergencyStopService.deactivate(req.user!.id);
+    res.json({ emergencyStop: false });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al cambiar la parada de emergencia' });
+  }
+});
+
+// Copia de configuración (Configuración → exportar/importar): todo menos la Base de Conocimiento
+// — ver ConfigTransferService para el detalle de qué viaja y qué se reemplaza al importar.
+router.get('/config/export', async (req: Request, res: Response) => {
+  try {
+    res.json(await ConfigTransferService.exportConfig(req.user!.id));
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al exportar la configuración' });
+  }
+});
+
+router.post('/config/import', async (req: Request, res: Response) => {
+  try {
+    const summary = await ConfigTransferService.importConfig(req.user!.id, req.body);
+    // Mismo criterio que PUT /ai-pause-after-advisor-minutes: las pausas en curso pasan a regirse
+    // por el valor importado.
+    const user = await AuthService.getUserById(req.user!.id);
+    if (user) await BotContactService.rescheduleAiPauses(user.id, user.aiPauseAfterAdvisorMinutes);
+    res.json({ summary, user });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Error al importar la configuración' });
   }
 });
 

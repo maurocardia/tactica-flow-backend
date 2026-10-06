@@ -59,6 +59,20 @@ export class FlowEngineService {
     userStates.delete(phoneNumber);
   }
 
+  /** Parada de emergencia (ver EmergencyStopService): corta los temporizadores de "sin respuesta"
+   * y olvida en qué nodo quedó cada cliente de ESTA cuenta. Un estado sin sendContext no se sabe
+   * de qué cuenta es (llamadores de prueba) — se limpia igual, no tiene nada que mandar. */
+  static clearStatesForUser(userId: number): number {
+    let cleared = 0;
+    for (const [phoneKey, state] of userStates) {
+      if (state.sendContext && state.sendContext.userId !== userId) continue;
+      if (state.timeoutTimer) clearTimeout(state.timeoutTimer);
+      userStates.delete(phoneKey);
+      cleared++;
+    }
+    return cleared;
+  }
+
   // Guarda en qué nodo quedó el cliente, cancelando cualquier timer de "sin respuesta" que
   // hubiera quedado pendiente de un estado anterior (si no, un cliente que SÍ responde a tiempo
   // igual recibiría después el mensaje de "no respondiste").
