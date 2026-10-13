@@ -98,6 +98,19 @@ export class AdvisorService {
     return rows.length > 0 ? mapRow(rows[0]) : null;
   }
 
+  /** ¿Este teléfono es de alguien cargado como asesor, esté activo o no? — para que el bot no le
+   * responda (ver WhatsappService.handleIncomingMessage). A diferencia de findByPhone, no mira
+   * is_active: ese switch decide si se le derivan clientes, no si es parte del equipo. */
+  static async isAdvisorPhone(userId: number, phone: string): Promise<boolean> {
+    const digits = phone.replace(/[^0-9]/g, '');
+    if (!digits) return false;
+    const { rows } = await db.query(
+      `SELECT 1 FROM advisors WHERE user_id = $1 AND regexp_replace(phone, '[^0-9]', '', 'g') = $2 LIMIT 1`,
+      [userId, digits]
+    );
+    return rows.length > 0;
+  }
+
   static async resetCounts(userId: number): Promise<void> {
     await db.query('UPDATE advisors SET handoff_count = 0, last_handoff_at = NULL WHERE user_id = $1', [userId]);
   }
