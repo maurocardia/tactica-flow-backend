@@ -119,6 +119,17 @@ export interface User {
   advisorCounterEnabled: boolean;
   /** Parada de emergencia activa: la cuenta no manda nada automático — ver EmergencyStopService. */
   emergencyStop: boolean;
+  /** Mensaje de bienvenida al activarse un chat (ver WelcomeMessageService) — texto vacío = el
+   * default del código; los minutos son el silencio que tiene que pasar para que cuente como chat nuevo. */
+  welcomeMessageEnabled: boolean;
+  welcomeMessageText: string;
+  welcomeInactivityMinutes: number;
+  /** Palabra clave (case-insensitive) para que el cliente apague el bot para sí mismo — ver
+   * WhatsappService.handleIncomingMessage y BotContactService.bot_stopped_until. */
+  stopCommandKeyword: string;
+  /** 0 = el apagado por STOP es permanente (hasta que lo reactiven a mano); > 0 = minutos hasta
+   * reactivarse solo (ver AdvisorQueueWorker). */
+  stopCommandMinutes: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -157,6 +168,11 @@ function mapUserRow(row: any): User {
     aiPauseAfterAdvisorMinutes: row.ai_pause_after_advisor_minutes,
     advisorCounterEnabled: row.advisor_counter_enabled ?? true,
     emergencyStop: row.emergency_stop ?? false,
+    welcomeMessageEnabled: row.welcome_message_enabled ?? false,
+    welcomeMessageText: row.welcome_message_text ?? '',
+    welcomeInactivityMinutes: row.welcome_inactivity_minutes ?? 720,
+    stopCommandKeyword: row.stop_command_keyword ?? 'STOP',
+    stopCommandMinutes: row.stop_command_minutes ?? 0,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -311,6 +327,31 @@ export class AuthService {
     const { rows } = await db.query(
       `UPDATE users SET advisor_finish_keywords = $1, updated_at = now() WHERE id = $2 RETURNING *`,
       [keywords, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setWelcomeMessageConfig(
+    id: number,
+    config: { enabled: boolean; text: string; inactivityMinutes: number }
+  ): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET welcome_message_enabled = $1, welcome_message_text = $2, welcome_inactivity_minutes = $3,
+         updated_at = now() WHERE id = $4 RETURNING *`,
+      [config.enabled, config.text, config.inactivityMinutes, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setStopCommandConfig(
+    id: number,
+    config: { keyword: string; minutes: number }
+  ): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET stop_command_keyword = $1, stop_command_minutes = $2, updated_at = now() WHERE id = $3 RETURNING *`,
+      [config.keyword, config.minutes, id]
     );
     if (rows.length === 0) return null;
     return mapUserRow(rows[0]);

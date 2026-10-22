@@ -13,6 +13,7 @@ import { FlowMediaService } from './flowMedia.service.js';
 import { HandoffService } from './handoff.service.js';
 import { FlowEngineService } from './flowEngine.service.js';
 import { EmergencyStopService } from './emergencyStop.service.js';
+import { WelcomeMessageService } from './welcomeMessage.service.js';
 import { FlowOutboundMessage } from '../types/flow.js';
 import { looksLikePhoneDigits } from '../utils/whatsappIdentity.js';
 import { trace, preview } from '../utils/trace.js';
@@ -1030,6 +1031,34 @@ return connectPromise;
       }
     }
 
+    // Comando STOP: el cliente pide que el bot deje de escribirle — solo en chats individuales (en
+    // un grupo bot_enabled es del GRUPO entero, no de un participante puntual, así que una sola
+    // persona no puede apagarlo para todos). Va ANTES de crear la conversación/bot_contacts: no
+    // hace falta que quede guardado como si fuera una consulta normal.
+    if (!isGroup && !fromMe && !emergencyStopped && user) {
+      const stopKeyword = (user.stopCommandKeyword || 'STOP').trim().toLowerCase();
+      if (stopKeyword && text.trim().toLowerCase() === stopKeyword) {
+        const stopJid = canonicalIndividualJid || remoteJid;
+        try {
+          await BotContactService.stopBotFor(userId, stopJid, user.stopCommandMinutes);
+          trace('STOP_COMANDO', { usuario: userId, cliente: phone, minutos: user.stopCommandMinutes });
+        } catch (err) {
+          console.error('⚠️ [WhatsApp] Error aplicando el comando STOP:', err);
+        }
+        try {
+          await sendWithRetry(
+            socket,
+            remoteJid,
+            { text: 'Listo, no te vamos a volver a escribir. Si necesitás ayuda, escribinos cuando quieras.' },
+            'stop→cliente'
+          );
+        } catch (err) {
+          console.error('⚠️ [WhatsApp] No se pudo confirmar el comando STOP:', err);
+        }
+        return;
+      }
+    }
+
     const conversation = await ConversationService.findOrCreateByPhone(phone, contactName, userId, groupName);
 
     // Espejo liviano para el panel "Bot habilitado por contacto" (tabla bot_contacts, separada
@@ -1039,6 +1068,9 @@ return connectPromise;
     // actividad y el nombre quedan al día sin importar quién escribió.
     const botContactJid = isGroup ? remoteJid : (canonicalIndividualJid || remoteJid);
     const botContactName = isGroup ? (groupName || remoteJid.split('@')[0]) : contactName;
+    // Capturado ANTES de upsert() (que la pisa a "ahora") — lo usa la bienvenida en grupos más
+    // abajo para saber si el GRUPO entero venía inactivo (ver WelcomeMessageService/getLastActivity).
+    const groupLastActivityBefore = isGroup ? await BotContactService.getLastActivity(userId, botContactJid) : null;
     BotContactService.upsert(userId, botContactJid, botContactName, isGroup, new Date(), user?.botEnabledForNewContacts ?? false).catch((err) => {
       console.error(`⚠️ [WhatsApp] Error sincronizando bot_contacts para ${botContactJid}:`, err);
     });
@@ -1236,10 +1268,51 @@ return connectPromise;
       return;
     }
 
+    // Mensaje de bienvenida (presentación del bot): cada vez que se "activa" el chat — primer
+    // mensaje del cliente, o el primero después de N horas sin mensajes de ningún lado (ver
+    // WelcomeMessageService). En GRUPOS se manda UNA sola vez por reactivación del grupo entero
+    // (no una por participante, que se sentiría repetitivo) — se usa la última actividad del grupo
+    // en bot_contacts (groupLastActivityBefore, capturado antes del upsert de este mensaje) en vez
+    // del historial de ESTE participante puntual. Va acá, después de todo el gating, así no le
+    // llega a quien el bot no le respondería igual (Blacklist, asesores, relay, pausa de IA, bot
+    // apagado para el contacto/grupo).
+    let botHistory = history;
+    const startsNewChat = isGroup
+      ? WelcomeMessageService.startsNewGroupChat(groupLastActivityBefore, user.welcomeInactivityMinutes)
+      : WelcomeMessageService.startsNewChat(priorMessages ?? [], user.welcomeInactivityMinutes);
+    if (user.welcomeMessageEnabled && startsNewChat) {
+      const welcomeText = WelcomeMessageService.render(user.welcomeMessageText, plainContactName);
+      trace('BIENVENIDA', { usuario: userId, cliente: phone, msgId: msg.key?.id, texto: preview(welcomeText) });
+      if (user.botReplyDelayEnabled) {
+        await humanDelay(socket, remoteJid, welcomeText, user.botReplyDelayMinMs, user.botReplyDelayMaxMs);
+      }
+      if (EmergencyStopService.isActive(userId)) {
+        trace('SIN_RESPUESTA', { usuario: userId, cliente: phone, msgId: msg.key?.id, motivo: 'parada de emergencia activa (bienvenida descartada)' });
+        return;
+      }
+      await sendFlowMessages(userId, socket, remoteJid, [{ kind: 'text', text: welcomeText }], { isGroup, participantJid });
+      const welcomeOutbound = await ConversationService.addMessage(conversation.id, 'bot', welcomeText);
+      if (welcomeOutbound) {
+        io.to(`chat_${conversation.id}`).emit('new_message', welcomeOutbound.message);
+        io.emit('conversation_updated', welcomeOutbound.conversation);
+      }
+      // Si el cliente solo saludó, la bienvenida ya es la respuesta (la IA contestaría otro "¿en
+      // qué te ayudo?"). Solo en "Solo IA": con flujos, un "hola" puede ser el disparador de un
+      // menú y tiene que seguir llegando. Si trajo una consulta, se responde igual, y la IA ve la
+      // bienvenida en el historial para no volver a saludar.
+      if (user.botMode === 'ai_only' && WelcomeMessageService.isGreetingOnly(text)) {
+        try {
+          if (msg.key) await socket.readMessages([msg.key]);
+        } catch {}
+        return;
+      }
+      botHistory = [...history, { role: 'assistant' as const, content: welcomeText }];
+    }
+
     const botResult = await BotEngineService.processIncomingMessage(
       text,
       phone,
-      history,
+      botHistory,
       {},
       user.aiFallbackEnabled,
       user.aiCustomInstructions,

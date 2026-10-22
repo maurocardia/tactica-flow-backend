@@ -465,6 +465,32 @@ const SCHEMA_SQL = `
   -- puente con asesores, cola, programados) — ver EmergencyStopService.
   ALTER TABLE users ADD COLUMN IF NOT EXISTS emergency_stop BOOLEAN NOT NULL DEFAULT false;
 
+  -- Mensaje de bienvenida (presentación del bot) que se manda cada vez que se "activa" un chat: el
+  -- primer mensaje del cliente, o el primero después de welcome_inactivity_minutes sin mensajes de
+  -- ningún lado — ver WelcomeMessageService. Texto vacío = el default del código. En MINUTOS (no
+  -- horas) para que el panel pueda ofrecer minutos u horas como unidad sin perder precisión —
+  -- reemplaza a la columna vieja "welcome_inactivity_hours" (se deja esa sin usar, no vale la pena
+  -- un DROP, mismo criterio que el resto de las columnas legacy de este archivo).
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS welcome_message_enabled BOOLEAN NOT NULL DEFAULT false;
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS welcome_message_text TEXT NOT NULL DEFAULT '';
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS welcome_inactivity_minutes INT NOT NULL DEFAULT 720;
+
+  -- Comando STOP: el cliente escribe la palabra clave (case-insensitive, por defecto "STOP") en un
+  -- chat individual y el bot se apaga para ESE contacto puntual (bot_contacts.bot_enabled = false,
+  -- mismo interruptor que el switch manual del panel) — ver WelcomeMessageService/whatsapp.service.ts.
+  -- stop_command_minutes = 0 (default) es permanente, hasta que alguien lo prenda a mano desde el
+  -- panel; un valor mayor a 0 lo reactiva solo después de esos minutos (ver bot_contacts.bot_stopped_until
+  -- más abajo y AdvisorQueueWorker, que ya corre cada 1 min para timers parecidos). Vive en el mismo
+  -- panel que el mensaje de bienvenida (modal "Mensaje de bienvenida" de ChatbotModule.tsx). En
+  -- minutos por el mismo motivo que welcome_inactivity_minutes arriba.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS stop_command_keyword TEXT NOT NULL DEFAULT 'STOP';
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS stop_command_minutes INT NOT NULL DEFAULT 0;
+
+  -- Vencimiento del apagado por comando STOP (ver arriba) — NULL o vencido = no aplica. Separada de
+  -- bot_enabled porque ese campo también lo toca el usuario a mano desde el panel; esta columna es
+  -- solo para que el worker sepa a quién reactivar solo cuando corresponde.
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS bot_stopped_until TIMESTAMPTZ;
+
   -- Adjuntos multimedia de los bloques de flujo (Enviar Imagen/Video/Audio/Documento). Los bytes
   -- se guardan acá y se cargan en proceso para pasárselos a Baileys como Buffer — así no hace
   -- falta exponer una URL pública ni que el backend sea alcanzable desde internet.
