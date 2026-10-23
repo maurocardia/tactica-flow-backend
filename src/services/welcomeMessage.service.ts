@@ -14,6 +14,12 @@ export const WELCOME_INACTIVITY_MINUTES_MIN = 1;
 export const WELCOME_INACTIVITY_MINUTES_MAX = 43200; // 30 días
 export const WELCOME_MESSAGE_MAX_LEN = 1500;
 
+/** Texto que se manda cuando el cliente activa el comando STOP, si la cuenta dejó el campo
+ * vacío — acepta {palabra} (la keyword del STOP) y {tiempo} (la duración configurada). */
+export const DEFAULT_STOP_COMMAND_MESSAGE =
+  'Listo, no te vamos a volver a escribir. Si necesitás ayuda, escribinos cuando quieras.';
+export const STOP_COMMAND_MESSAGE_MAX_LEN = 1500;
+
 // Palabras que, solas, son "solo un saludo" — con esto el mensaje de bienvenida alcanza como
 // respuesta y no hace falta que además conteste la IA (que repetiría "¿en qué te ayudo?").
 const GREETING_WORDS = new Set([
@@ -57,6 +63,30 @@ export class WelcomeMessageService {
     const name = /^[\d\s+-]*$/.test(contactName) ? '' : contactName.trim();
     return text
       .replace(/,?\s*\{nombre\}/gi, (match) => (name ? match.replace(/\{nombre\}/i, name) : ''))
+      .trim();
+  }
+
+  /** "20 minutos", "3 horas", "2 días", o "siempre" (0 = permanente, ver stop_command_minutes). */
+  static formatMinutes(minutes: number): string {
+    if (minutes <= 0) return 'siempre';
+    if (minutes % 1440 === 0) {
+      const days = minutes / 1440;
+      return `${days} ${days === 1 ? 'día' : 'días'}`;
+    }
+    if (minutes % 60 === 0) {
+      const hours = minutes / 60;
+      return `${hours} ${hours === 1 ? 'hora' : 'horas'}`;
+    }
+    return `${minutes} ${minutes === 1 ? 'minuto' : 'minutos'}`;
+  }
+
+  /** Texto final a mandar al activarse el comando STOP: el de la cuenta (o el default) con
+   * {palabra} y {tiempo} reemplazados — ver DEFAULT_STOP_COMMAND_MESSAGE. */
+  static renderStopMessage(template: string, keyword: string, minutes: number): string {
+    const text = template.trim() || DEFAULT_STOP_COMMAND_MESSAGE;
+    return text
+      .replace(/\{palabra\}/gi, keyword)
+      .replace(/\{tiempo\}/gi, WelcomeMessageService.formatMinutes(minutes))
       .trim();
   }
 

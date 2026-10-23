@@ -10,7 +10,8 @@ import { ConfigTransferService } from '../services/configTransfer.service.js';
 import {
   WELCOME_MESSAGE_MAX_LEN,
   WELCOME_INACTIVITY_MINUTES_MIN,
-  WELCOME_INACTIVITY_MINUTES_MAX
+  WELCOME_INACTIVITY_MINUTES_MAX,
+  STOP_COMMAND_MESSAGE_MAX_LEN
 } from '../services/welcomeMessage.service.js';
 import { authMiddleware } from '../middleware/auth.middleware.js';
 import { io } from '../server.js';
@@ -462,21 +463,23 @@ const STOP_COMMAND_KEYWORD_MAX_LEN = 50;
 const STOP_COMMAND_MINUTES_MIN = 0;
 const STOP_COMMAND_MINUTES_MAX = 525600; // 1 año
 router.put('/stop-command', async (req: Request, res: Response) => {
-  const { keyword, minutes } = req.body;
+  const { keyword, minutes, message } = req.body;
   if (
     typeof keyword !== 'string' || !keyword.trim() || keyword.trim().length > STOP_COMMAND_KEYWORD_MAX_LEN ||
-    !Number.isInteger(minutes) || minutes < STOP_COMMAND_MINUTES_MIN || minutes > STOP_COMMAND_MINUTES_MAX
+    !Number.isInteger(minutes) || minutes < STOP_COMMAND_MINUTES_MIN || minutes > STOP_COMMAND_MINUTES_MAX ||
+    typeof message !== 'string' || message.length > STOP_COMMAND_MESSAGE_MAX_LEN
   ) {
     return res.status(400).json({
-      error: `"keyword" es obligatorio (hasta ${STOP_COMMAND_KEYWORD_MAX_LEN} caracteres) y "minutes" un entero entre ${STOP_COMMAND_MINUTES_MIN} y ${STOP_COMMAND_MINUTES_MAX}`
+      error: `"keyword" es obligatorio (hasta ${STOP_COMMAND_KEYWORD_MAX_LEN} caracteres), "minutes" un entero entre ${STOP_COMMAND_MINUTES_MIN} y ${STOP_COMMAND_MINUTES_MAX}, y "message" texto de hasta ${STOP_COMMAND_MESSAGE_MAX_LEN} caracteres`
     });
   }
 
   try {
-    const user = await AuthService.setStopCommandConfig(req.user!.id, { keyword: keyword.trim(), minutes });
+    const user = await AuthService.setStopCommandConfig(req.user!.id, { keyword: keyword.trim(), minutes, message: message.trim() });
     res.json({
       stopCommandKeyword: user?.stopCommandKeyword ?? keyword.trim(),
-      stopCommandMinutes: user?.stopCommandMinutes ?? minutes
+      stopCommandMinutes: user?.stopCommandMinutes ?? minutes,
+      stopCommandMessage: user?.stopCommandMessage ?? message.trim()
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al actualizar el comando STOP' });

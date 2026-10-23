@@ -130,6 +130,9 @@ export interface User {
   /** 0 = el apagado por STOP es permanente (hasta que lo reactiven a mano); > 0 = minutos hasta
    * reactivarse solo (ver AdvisorQueueWorker). */
   stopCommandMinutes: number;
+  /** Mensaje que recibe el cliente al activar el STOP — vacío = default. Admite {palabra} y
+   * {tiempo} (ver WelcomeMessageService.renderStopMessage). */
+  stopCommandMessage: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -173,6 +176,7 @@ function mapUserRow(row: any): User {
     welcomeInactivityMinutes: row.welcome_inactivity_minutes ?? 720,
     stopCommandKeyword: row.stop_command_keyword ?? 'STOP',
     stopCommandMinutes: row.stop_command_minutes ?? 0,
+    stopCommandMessage: row.stop_command_message ?? '',
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -347,11 +351,12 @@ export class AuthService {
 
   static async setStopCommandConfig(
     id: number,
-    config: { keyword: string; minutes: number }
+    config: { keyword: string; minutes: number; message: string }
   ): Promise<User | null> {
     const { rows } = await db.query(
-      `UPDATE users SET stop_command_keyword = $1, stop_command_minutes = $2, updated_at = now() WHERE id = $3 RETURNING *`,
-      [config.keyword, config.minutes, id]
+      `UPDATE users SET stop_command_keyword = $1, stop_command_minutes = $2, stop_command_message = $3,
+         updated_at = now() WHERE id = $4 RETURNING *`,
+      [config.keyword, config.minutes, config.message, id]
     );
     if (rows.length === 0) return null;
     return mapUserRow(rows[0]);

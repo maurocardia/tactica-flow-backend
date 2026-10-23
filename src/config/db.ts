@@ -485,6 +485,9 @@ const SCHEMA_SQL = `
   -- minutos por el mismo motivo que welcome_inactivity_minutes arriba.
   ALTER TABLE users ADD COLUMN IF NOT EXISTS stop_command_keyword TEXT NOT NULL DEFAULT 'STOP';
   ALTER TABLE users ADD COLUMN IF NOT EXISTS stop_command_minutes INT NOT NULL DEFAULT 0;
+  -- Mensaje que recibe el cliente al activar el STOP. Vacío = DEFAULT_STOP_COMMAND_MESSAGE. Admite
+  -- los placeholders {palabra} y {tiempo} (ver WelcomeMessageService.renderStopMessage).
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS stop_command_message TEXT NOT NULL DEFAULT '';
 
   -- Vencimiento del apagado por comando STOP (ver arriba) — NULL o vencido = no aplica. Separada de
   -- bot_enabled porque ese campo también lo toca el usuario a mano desde el panel; esta columna es

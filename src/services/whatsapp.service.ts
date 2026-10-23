@@ -1046,12 +1046,12 @@ return connectPromise;
           console.error('⚠️ [WhatsApp] Error aplicando el comando STOP:', err);
         }
         try {
-          await sendWithRetry(
-            socket,
-            remoteJid,
-            { text: 'Listo, no te vamos a volver a escribir. Si necesitás ayuda, escribinos cuando quieras.' },
-            'stop→cliente'
+          const stopReplyText = WelcomeMessageService.renderStopMessage(
+            user.stopCommandMessage,
+            user.stopCommandKeyword || 'STOP',
+            user.stopCommandMinutes
           );
+          await sendWithRetry(socket, remoteJid, { text: stopReplyText }, 'stop→cliente');
         } catch (err) {
           console.error('⚠️ [WhatsApp] No se pudo confirmar el comando STOP:', err);
         }

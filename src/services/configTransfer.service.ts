@@ -60,6 +60,7 @@ const SETTINGS: SettingDef[] = [
   { key: 'welcomeInactivityMinutes', column: 'welcome_inactivity_minutes', type: 'int', min: 1, max: 43200 },
   { key: 'stopCommandKeyword', column: 'stop_command_keyword', type: 'text' },
   { key: 'stopCommandMinutes', column: 'stop_command_minutes', type: 'int', min: 0, max: 525600 },
+  { key: 'stopCommandMessage', column: 'stop_command_message', type: 'text' },
 ];
 
 const RULE_ACTIONS = ['STATIC_REPLY', 'CALL_AI', 'TACTICA_STOCK_LOOKUP', 'CREATE_SUPPORT_TICKET', 'HANDOFF', 'DELAY', 'WEBHOOK'];
