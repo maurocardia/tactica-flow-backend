@@ -486,6 +486,31 @@ router.put('/stop-command', async (req: Request, res: Response) => {
   }
 });
 
+// Comando de reactivación (contracara del STOP): si el cliente escribe esta palabra con el bot
+// apagado, se lo vuelve a prender — ver BotContactService.resumeBotFor. Apagado por default.
+const RESUME_COMMAND_KEYWORD_MAX_LEN = 50;
+router.put('/resume-command', async (req: Request, res: Response) => {
+  const { enabled, keyword } = req.body;
+  if (
+    typeof enabled !== 'boolean' ||
+    typeof keyword !== 'string' || !keyword.trim() || keyword.trim().length > RESUME_COMMAND_KEYWORD_MAX_LEN
+  ) {
+    return res.status(400).json({
+      error: `"enabled" debe ser booleano y "keyword" es obligatorio (hasta ${RESUME_COMMAND_KEYWORD_MAX_LEN} caracteres)`
+    });
+  }
+
+  try {
+    const user = await AuthService.setResumeCommandConfig(req.user!.id, { enabled, keyword: keyword.trim() });
+    res.json({
+      resumeCommandEnabled: user?.resumeCommandEnabled ?? enabled,
+      resumeCommandKeyword: user?.resumeCommandKeyword ?? keyword.trim()
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar el comando de reactivación' });
+  }
+});
+
 // Prende/apaga el contador de derivaciones por asesor — apagado, se reparte por orden de lista
 // sin mirar cuántos casos atendió cada uno (ver AdvisorService.pickFreeAdvisor).
 router.put('/advisor-counter-enabled', async (req: Request, res: Response) => {

@@ -514,6 +514,18 @@ export class BotContactService {
     );
   }
 
+  /** Comando de reactivación del cliente (contracara de stopBotFor): vuelve a prender el bot para
+   * este contacto puntual, sea cual sea el motivo por el que estaba apagado (STOP o switch manual
+   * del panel) — mismo campo `bot_enabled`. */
+  static async resumeBotFor(userId: number, jid: string): Promise<void> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    await db.query(
+      `UPDATE bot_contacts SET bot_enabled = true, bot_stopped_until = NULL
+       WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
+      [userId, ownerJid, jid]
+    );
+  }
+
   /** Sweep periódico (ver AdvisorQueueWorker): reactiva a todo contacto cuyo apagado por STOP ya
    * venció. Devuelve cuántos reactivó. */
   static async reactivateExpiredStops(): Promise<number> {

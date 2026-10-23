@@ -489,6 +489,13 @@ const SCHEMA_SQL = `
   -- los placeholders {palabra} y {tiempo} (ver WelcomeMessageService.renderStopMessage).
   ALTER TABLE users ADD COLUMN IF NOT EXISTS stop_command_message TEXT NOT NULL DEFAULT '';
 
+  -- Comando de reactivación (contracara del STOP, apagado por default): si el cliente escribe esta
+  -- palabra (case-insensitive) en un chat individual con el bot apagado, se lo vuelve a prender —
+  -- mismo bot_enabled de arriba, así que también reactiva un apagado manual desde el panel, no
+  -- solo uno hecho con STOP. Ver BotContactService.resumeBotFor/whatsapp.service.ts.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS resume_command_enabled BOOLEAN NOT NULL DEFAULT false;
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS resume_command_keyword TEXT NOT NULL DEFAULT 'INICIAR';
+
   -- Vencimiento del apagado por comando STOP (ver arriba) — NULL o vencido = no aplica. Separada de
   -- bot_enabled porque ese campo también lo toca el usuario a mano desde el panel; esta columna es
   -- solo para que el worker sepa a quién reactivar solo cuando corresponde.

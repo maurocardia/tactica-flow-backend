@@ -1059,6 +1059,30 @@ return connectPromise;
       }
     }
 
+    // Comando de reactivación (contracara del STOP, apagado por default): el cliente escribe esta
+    // palabra y el bot vuelve a prenderse para él, sea cual sea el motivo por el que estaba
+    // apagado. Solo dispara si el bot está REALMENTE apagado para este contacto — si no, se deja
+    // pasar como un mensaje normal (evita que alguien con el bot prendido "gaste" su consulta si
+    // esa palabra coincide con algo que quería preguntar).
+    if (!isGroup && !fromMe && !emergencyStopped && user?.resumeCommandEnabled) {
+      const resumeKeyword = (user.resumeCommandKeyword || 'INICIAR').trim().toLowerCase();
+      const resumeJid = canonicalIndividualJid || remoteJid;
+      if (resumeKeyword && text.trim().toLowerCase() === resumeKeyword && !(await BotContactService.isEnabled(userId, resumeJid))) {
+        try {
+          await BotContactService.resumeBotFor(userId, resumeJid);
+          trace('REACTIVACION_COMANDO', { usuario: userId, cliente: phone });
+        } catch (err) {
+          console.error('⚠️ [WhatsApp] Error aplicando el comando de reactivación:', err);
+        }
+        try {
+          await sendWithRetry(socket, remoteJid, { text: '¡Listo, retomamos la conversación! 👋' }, 'reactivación→cliente');
+        } catch (err) {
+          console.error('⚠️ [WhatsApp] No se pudo confirmar el comando de reactivación:', err);
+        }
+        return;
+      }
+    }
+
     const conversation = await ConversationService.findOrCreateByPhone(phone, contactName, userId, groupName);
 
     // Espejo liviano para el panel "Bot habilitado por contacto" (tabla bot_contacts, separada
@@ -1281,7 +1305,12 @@ return connectPromise;
       ? WelcomeMessageService.startsNewGroupChat(groupLastActivityBefore, user.welcomeInactivityMinutes)
       : WelcomeMessageService.startsNewChat(priorMessages ?? [], user.welcomeInactivityMinutes);
     if (user.welcomeMessageEnabled && startsNewChat) {
-      const welcomeText = WelcomeMessageService.render(user.welcomeMessageText, plainContactName);
+      const welcomeText = WelcomeMessageService.render(
+        user.welcomeMessageText,
+        plainContactName,
+        user.stopCommandKeyword || 'STOP',
+        user.stopCommandMinutes
+      );
       trace('BIENVENIDA', { usuario: userId, cliente: phone, msgId: msg.key?.id, texto: preview(welcomeText) });
       if (user.botReplyDelayEnabled) {
         await humanDelay(socket, remoteJid, welcomeText, user.botReplyDelayMinMs, user.botReplyDelayMaxMs);

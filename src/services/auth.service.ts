@@ -133,6 +133,10 @@ export interface User {
   /** Mensaje que recibe el cliente al activar el STOP — vacío = default. Admite {palabra} y
    * {tiempo} (ver WelcomeMessageService.renderStopMessage). */
   stopCommandMessage: string;
+  /** Comando de reactivación (contracara del STOP, apagado por default): si el cliente escribe
+   * esta palabra con el bot apagado, se lo vuelve a prender — ver BotContactService.resumeBotFor. */
+  resumeCommandEnabled: boolean;
+  resumeCommandKeyword: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -177,6 +181,8 @@ function mapUserRow(row: any): User {
     stopCommandKeyword: row.stop_command_keyword ?? 'STOP',
     stopCommandMinutes: row.stop_command_minutes ?? 0,
     stopCommandMessage: row.stop_command_message ?? '',
+    resumeCommandEnabled: row.resume_command_enabled ?? false,
+    resumeCommandKeyword: row.resume_command_keyword ?? 'INICIAR',
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -357,6 +363,18 @@ export class AuthService {
       `UPDATE users SET stop_command_keyword = $1, stop_command_minutes = $2, stop_command_message = $3,
          updated_at = now() WHERE id = $4 RETURNING *`,
       [config.keyword, config.minutes, config.message, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setResumeCommandConfig(
+    id: number,
+    config: { enabled: boolean; keyword: string }
+  ): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET resume_command_enabled = $1, resume_command_keyword = $2, updated_at = now() WHERE id = $3 RETURNING *`,
+      [config.enabled, config.keyword, id]
     );
     if (rows.length === 0) return null;
     return mapUserRow(rows[0]);

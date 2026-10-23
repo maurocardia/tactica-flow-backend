@@ -56,13 +56,17 @@ export class WelcomeMessageService {
     return elapsedMs >= inactivityMinutes * 60 * 1000;
   }
 
-  /** Texto final a mandar: el de la cuenta (o el default) con {nombre} reemplazado. */
-  static render(template: string, contactName: string): string {
+  /** Texto final a mandar: el de la cuenta (o el default) con {nombre} reemplazado, y {palabra}/
+   * {tiempo} (la keyword y la duración del comando STOP) si la cuenta los usó en su texto — así el
+   * bot puede avisar de entrada cómo pausarse, sin tener que repetir el número a mano. */
+  static render(template: string, contactName: string, stopKeyword: string, stopMinutes: number): string {
     const text = template.trim() || DEFAULT_WELCOME_MESSAGE;
     // Sin nombre guardado el "nombre" es el número de teléfono — mejor un "¡Hola!" a secas.
     const name = /^[\d\s+-]*$/.test(contactName) ? '' : contactName.trim();
     return text
       .replace(/,?\s*\{nombre\}/gi, (match) => (name ? match.replace(/\{nombre\}/i, name) : ''))
+      .replace(/\{palabra\}/gi, stopKeyword)
+      .replace(/\{tiempo\}/gi, WelcomeMessageService.formatMinutes(stopMinutes))
       .trim();
   }
 
