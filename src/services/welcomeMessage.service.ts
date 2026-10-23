@@ -15,9 +15,10 @@ export const WELCOME_INACTIVITY_MINUTES_MAX = 43200; // 30 días
 export const WELCOME_MESSAGE_MAX_LEN = 1500;
 
 /** Texto que se manda cuando el cliente activa el comando STOP, si la cuenta dejó el campo
- * vacío — acepta {palabra} (la keyword del STOP) y {tiempo} (la duración configurada). */
+ * vacío — acepta {palabra} (la keyword del STOP), {tiempo} (la duración configurada) y
+ * {reactivacion} (la keyword del comando de reactivación). */
 export const DEFAULT_STOP_COMMAND_MESSAGE =
-  'Listo, no te vamos a volver a escribir. Si necesitás ayuda, escribinos cuando quieras.';
+  'Listo, no te vamos a escribir más. Si nos necesitás de nuevo, reactivá escribiendo {reactivacion}.';
 export const STOP_COMMAND_MESSAGE_MAX_LEN = 1500;
 
 // Palabras que, solas, son "solo un saludo" — con esto el mensaje de bienvenida alcanza como
@@ -85,12 +86,13 @@ export class WelcomeMessageService {
   }
 
   /** Texto final a mandar al activarse el comando STOP: el de la cuenta (o el default) con
-   * {palabra} y {tiempo} reemplazados — ver DEFAULT_STOP_COMMAND_MESSAGE. */
-  static renderStopMessage(template: string, keyword: string, minutes: number): string {
+   * {palabra}, {tiempo} y {reactivacion} reemplazados — ver DEFAULT_STOP_COMMAND_MESSAGE. */
+  static renderStopMessage(template: string, keyword: string, minutes: number, resumeKeyword: string): string {
     const text = template.trim() || DEFAULT_STOP_COMMAND_MESSAGE;
     return text
       .replace(/\{palabra\}/gi, keyword)
       .replace(/\{tiempo\}/gi, WelcomeMessageService.formatMinutes(minutes))
+      .replace(/\{reactivacion\}/gi, resumeKeyword)
       .trim();
   }
 

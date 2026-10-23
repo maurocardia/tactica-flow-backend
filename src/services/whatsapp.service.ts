@@ -1049,7 +1049,8 @@ return connectPromise;
           const stopReplyText = WelcomeMessageService.renderStopMessage(
             user.stopCommandMessage,
             user.stopCommandKeyword || 'STOP',
-            user.stopCommandMinutes
+            user.stopCommandMinutes,
+            user.resumeCommandKeyword || 'INICIAR'
           );
           await sendWithRetry(socket, remoteJid, { text: stopReplyText }, 'stop→cliente');
         } catch (err) {
