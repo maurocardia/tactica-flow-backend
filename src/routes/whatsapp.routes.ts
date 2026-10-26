@@ -7,6 +7,12 @@ import { AdvisorService } from '../services/advisor.service.js';
 import { FlowMediaService } from '../services/flowMedia.service.js';
 import { EmergencyStopService } from '../services/emergencyStop.service.js';
 import { ConfigTransferService } from '../services/configTransfer.service.js';
+import {
+  WELCOME_MESSAGE_MAX_LEN,
+  WELCOME_INACTIVITY_MINUTES_MIN,
+  WELCOME_INACTIVITY_MINUTES_MAX,
+  STOP_COMMAND_MESSAGE_MAX_LEN
+} from '../services/welcomeMessage.service.js';
 import { authMiddleware } from '../middleware/auth.middleware.js';
 import { io } from '../server.js';
 
@@ -420,6 +426,88 @@ router.post('/ai-pause/clear', async (req: Request, res: Response) => {
     res.json({ cleared });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al reactivar la IA' });
+  }
+});
+
+// Mensaje de bienvenida (presentación del bot) al activarse un chat — ver WelcomeMessageService.
+// Texto vacío = el default del código.
+router.put('/welcome-message', async (req: Request, res: Response) => {
+  const { enabled, text, inactivityMinutes } = req.body;
+  if (
+    typeof enabled !== 'boolean' ||
+    typeof text !== 'string' || text.length > WELCOME_MESSAGE_MAX_LEN ||
+    !Number.isInteger(inactivityMinutes) ||
+    inactivityMinutes < WELCOME_INACTIVITY_MINUTES_MIN ||
+    inactivityMinutes > WELCOME_INACTIVITY_MINUTES_MAX
+  ) {
+    return res.status(400).json({
+      error: `"enabled" debe ser booleano, "text" texto de hasta ${WELCOME_MESSAGE_MAX_LEN} caracteres, y "inactivityMinutes" un entero entre ${WELCOME_INACTIVITY_MINUTES_MIN} y ${WELCOME_INACTIVITY_MINUTES_MAX}`
+    });
+  }
+
+  try {
+    const user = await AuthService.setWelcomeMessageConfig(req.user!.id, { enabled, text: text.trim(), inactivityMinutes });
+    res.json({
+      welcomeMessageEnabled: user?.welcomeMessageEnabled ?? enabled,
+      welcomeMessageText: user?.welcomeMessageText ?? text.trim(),
+      welcomeInactivityMinutes: user?.welcomeInactivityMinutes ?? inactivityMinutes
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar el mensaje de bienvenida' });
+  }
+});
+
+// Comando STOP: el cliente escribe la palabra clave y el bot se apaga para ese contacto puntual
+// (ver BotContactService.stopBotFor). `minutes = 0` = permanente, hasta que lo reactiven a mano.
+const STOP_COMMAND_KEYWORD_MAX_LEN = 50;
+const STOP_COMMAND_MINUTES_MIN = 0;
+const STOP_COMMAND_MINUTES_MAX = 525600; // 1 año
+router.put('/stop-command', async (req: Request, res: Response) => {
+  const { keyword, minutes, message } = req.body;
+  if (
+    typeof keyword !== 'string' || !keyword.trim() || keyword.trim().length > STOP_COMMAND_KEYWORD_MAX_LEN ||
+    !Number.isInteger(minutes) || minutes < STOP_COMMAND_MINUTES_MIN || minutes > STOP_COMMAND_MINUTES_MAX ||
+    typeof message !== 'string' || message.length > STOP_COMMAND_MESSAGE_MAX_LEN
+  ) {
+    return res.status(400).json({
+      error: `"keyword" es obligatorio (hasta ${STOP_COMMAND_KEYWORD_MAX_LEN} caracteres), "minutes" un entero entre ${STOP_COMMAND_MINUTES_MIN} y ${STOP_COMMAND_MINUTES_MAX}, y "message" texto de hasta ${STOP_COMMAND_MESSAGE_MAX_LEN} caracteres`
+    });
+  }
+
+  try {
+    const user = await AuthService.setStopCommandConfig(req.user!.id, { keyword: keyword.trim(), minutes, message: message.trim() });
+    res.json({
+      stopCommandKeyword: user?.stopCommandKeyword ?? keyword.trim(),
+      stopCommandMinutes: user?.stopCommandMinutes ?? minutes,
+      stopCommandMessage: user?.stopCommandMessage ?? message.trim()
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar el comando STOP' });
+  }
+});
+
+// Comando de reactivación (contracara del STOP): si el cliente escribe esta palabra con el bot
+// apagado, se lo vuelve a prender — ver BotContactService.resumeBotFor. Apagado por default.
+const RESUME_COMMAND_KEYWORD_MAX_LEN = 50;
+router.put('/resume-command', async (req: Request, res: Response) => {
+  const { enabled, keyword } = req.body;
+  if (
+    typeof enabled !== 'boolean' ||
+    typeof keyword !== 'string' || !keyword.trim() || keyword.trim().length > RESUME_COMMAND_KEYWORD_MAX_LEN
+  ) {
+    return res.status(400).json({
+      error: `"enabled" debe ser booleano y "keyword" es obligatorio (hasta ${RESUME_COMMAND_KEYWORD_MAX_LEN} caracteres)`
+    });
+  }
+
+  try {
+    const user = await AuthService.setResumeCommandConfig(req.user!.id, { enabled, keyword: keyword.trim() });
+    res.json({
+      resumeCommandEnabled: user?.resumeCommandEnabled ?? enabled,
+      resumeCommandKeyword: user?.resumeCommandKeyword ?? keyword.trim()
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar el comando de reactivación' });
   }
 });
 

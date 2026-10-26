@@ -269,6 +269,20 @@ export class BotContactService {
     return rows.length > 0 ? rows[0].name ?? null : null;
   }
 
+  /** `last_activity` TAL COMO ESTABA antes de este mensaje — hay que llamarlo ANTES de upsert()
+   * (que lo pisa a "ahora"). Usado por la bienvenida en GRUPOS (ver WelcomeMessageService): como
+   * ahí no hay un solo "historial" (cada participante tiene su propia conversación), se usa la
+   * última actividad del GRUPO entero en bot_contacts para decidir si el grupo "se reactivó". null
+   * = fila nueva, nunca tuvo actividad (grupo recién visto por primera vez). */
+  static async getLastActivity(userId: number, jid: string): Promise<Date | null> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query(
+      `SELECT last_activity FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
+      [userId, ownerJid, jid]
+    );
+    return rows.length > 0 && rows[0].last_activity ? new Date(rows[0].last_activity) : null;
+  }
+
   /** Atenciones con asesor cuyo tiempo ya venció pero todavía no se cerraron (siguen con
    * handoff_advisor_id) — de TODAS las cuentas. Las procesa AdvisorService.closeExpiredHandoffs. */
   static async listExpiredHandoffs(): Promise<
@@ -482,6 +496,42 @@ export class BotContactService {
     const { rowCount } = await db.query(
       `UPDATE bot_contacts SET ai_paused_until = NULL WHERE user_id = $1 AND ai_paused_until > now()`,
       [userId]
+    );
+    return rowCount ?? 0;
+  }
+
+  /** Comando STOP del cliente (ver WhatsappService.handleIncomingMessage): apaga el bot para este
+   * contacto puntual — mismo campo `bot_enabled` que el switch manual del panel, así que un admin
+   * lo puede prender de nuevo a mano en cualquier momento sin esperar. `minutes <= 0` = permanente
+   * (bot_stopped_until queda NULL, nadie lo reactiva solo). */
+  static async stopBotFor(userId: number, jid: string, minutes: number): Promise<void> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const stoppedUntil = minutes > 0 ? new Date(Date.now() + minutes * 60 * 1000) : null;
+    await db.query(
+      `UPDATE bot_contacts SET bot_enabled = false, bot_stopped_until = $1
+       WHERE user_id = $2 AND owner_jid = $3 AND jid = $4`,
+      [stoppedUntil, userId, ownerJid, jid]
+    );
+  }
+
+  /** Comando de reactivación del cliente (contracara de stopBotFor): vuelve a prender el bot para
+   * este contacto puntual, sea cual sea el motivo por el que estaba apagado (STOP o switch manual
+   * del panel) — mismo campo `bot_enabled`. */
+  static async resumeBotFor(userId: number, jid: string): Promise<void> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    await db.query(
+      `UPDATE bot_contacts SET bot_enabled = true, bot_stopped_until = NULL
+       WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
+      [userId, ownerJid, jid]
+    );
+  }
+
+  /** Sweep periódico (ver AdvisorQueueWorker): reactiva a todo contacto cuyo apagado por STOP ya
+   * venció. Devuelve cuántos reactivó. */
+  static async reactivateExpiredStops(): Promise<number> {
+    const { rowCount } = await db.query(
+      `UPDATE bot_contacts SET bot_enabled = true, bot_stopped_until = NULL
+       WHERE bot_stopped_until IS NOT NULL AND bot_stopped_until <= now()`
     );
     return rowCount ?? 0;
   }

@@ -1,6 +1,7 @@
 import { AdvisorQueueService } from './advisorQueue.service.js';
 import { AdvisorService } from './advisor.service.js';
 import { WhatsappService } from './whatsapp.service.js';
+import { BotContactService } from './botContact.service.js';
 import { trace } from '../utils/trace.js';
 
 let intervalRef: NodeJS.Timeout | null = null;
@@ -28,6 +29,10 @@ export class AdvisorQueueWorker {
         await AdvisorService.closeExpiredHandoffs();
         await AdvisorQueueWorker.sendDueReminders();
         await AdvisorQueueWorker.promoteFreeAdvisors();
+        // Reactiva a quien se autoapagó con el comando STOP y configuró horas (no permanente) —
+        // ver BotContactService.stopBotFor.
+        const reactivated = await BotContactService.reactivateExpiredStops();
+        if (reactivated > 0) trace('STOP_REACTIVADOS', { cantidad: reactivated });
       } catch (err) {
         console.error('❌ [AdvisorQueueWorker] Error inesperado en ciclo de evaluación:', err);
       } finally {

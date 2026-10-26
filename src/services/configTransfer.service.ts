@@ -55,6 +55,14 @@ const SETTINGS: SettingDef[] = [
   { key: 'handoffAmbiguousWords', column: 'handoff_ambiguous_words', type: 'text' },
   { key: 'handoffClarifyQuestion', column: 'handoff_clarify_question', type: 'text' },
   { key: 'advisorCounterEnabled', column: 'advisor_counter_enabled', type: 'boolean' },
+  { key: 'welcomeMessageEnabled', column: 'welcome_message_enabled', type: 'boolean' },
+  { key: 'welcomeMessageText', column: 'welcome_message_text', type: 'text' },
+  { key: 'welcomeInactivityMinutes', column: 'welcome_inactivity_minutes', type: 'int', min: 1, max: 43200 },
+  { key: 'stopCommandKeyword', column: 'stop_command_keyword', type: 'text' },
+  { key: 'stopCommandMinutes', column: 'stop_command_minutes', type: 'int', min: 0, max: 525600 },
+  { key: 'stopCommandMessage', column: 'stop_command_message', type: 'text' },
+  { key: 'resumeCommandEnabled', column: 'resume_command_enabled', type: 'boolean' },
+  { key: 'resumeCommandKeyword', column: 'resume_command_keyword', type: 'text' },
 ];
 
 const RULE_ACTIONS = ['STATIC_REPLY', 'CALL_AI', 'TACTICA_STOCK_LOOKUP', 'CREATE_SUPPORT_TICKET', 'HANDOFF', 'DELAY', 'WEBHOOK'];
