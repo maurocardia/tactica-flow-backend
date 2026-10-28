@@ -714,6 +714,23 @@ router.post('/bot-contacts/unpause', async (req: Request, res: Response) => {
   }
 });
 
+// Botón "Pausar bot"/"Reanudar bot" de la tarjeta del chat abierto (ContactCard.tsx): pausa el bot
+// para este contacto/grupo por el tiempo del comando STOP, o levanta la pausa. El cliente no se
+// entera de nada.
+router.put('/bot-contacts/:id/pause', async (req: Request, res: Response) => {
+  const { paused } = req.body;
+  if (typeof paused !== 'boolean') return res.status(400).json({ error: '"paused" debe ser true o false' });
+  try {
+    const contact = await BotContactService.getById(Number(req.params.id));
+    if (!contact || contact.userId !== req.user!.id) return res.status(404).json({ error: 'Contacto no encontrado' });
+    const minutes = paused ? (await AdvisorService.getStopCommandConfig(req.user!.id)).minutes : null;
+    const updated = await BotContactService.setPauseById(contact.id, minutes);
+    res.json(updated ?? contact);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al pausar el bot para este contacto' });
+  }
+});
+
 // Libera la reserva de asesor de un contacto — botón "Liberar asesor" de la lista de Contactos del
 // panel. Va por AdvisorService.finishAdvisory igual que POST /bot-contacts/unpause y POST
 // /advisors/:id/release: antes acá solo se limpiaba la reserva y se avisaba al cliente, sin

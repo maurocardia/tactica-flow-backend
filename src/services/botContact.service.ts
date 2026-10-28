@@ -26,6 +26,9 @@ export interface BotContact {
   // mientras tanto, esto solo evita que se derive al mismo cliente a otro asesor antes de tiempo.
   // Ver AdvisorService.getActiveHandoffAdvisor.
   handoffExpiresAt: string | null;
+  // Pausa por STOP (del asesor, del dueño o del botón "Pausar bot" del panel): mientras sea una
+  // fecha futura el bot no le responde. null/vencida = sin pausa. Ver pauseBotFor/isBotPaused.
+  botPausedUntil: string | null;
 }
 
 export interface GatingFlags {
@@ -47,6 +50,8 @@ function mapRow(row: any): BotContact {
     lastActivity: new Date(row.last_activity).toISOString(),
     handoffAdvisorId: row.handoff_advisor_id ?? null,
     handoffExpiresAt: row.handoff_expires_at ? new Date(row.handoff_expires_at).toISOString() : null,
+    botPausedUntil:
+      row.bot_stopped_until && new Date(row.bot_stopped_until) > new Date() ? new Date(row.bot_stopped_until).toISOString() : null,
   };
 }
 
@@ -517,6 +522,38 @@ export class BotContactService {
       [minutes, userId, ownerJid, jid]
     );
     return rows[0]?.name ?? null;
+  }
+
+  /** Botón "Pausar bot"/"Reanudar bot" de la tarjeta del chat en el panel: pausa por `minutes`
+   * (minutes > 0) o levanta la pausa (minutes = null), por id de fila. */
+  static async setPauseById(id: number, minutes: number | null): Promise<BotContact | null> {
+    const { rows } = await db.query(
+      `UPDATE bot_contacts SET bot_stopped_until = CASE WHEN $1::int IS NULL THEN NULL ELSE now() + ($1::int || ' minutes')::interval END
+       WHERE id = $2 RETURNING *`,
+      [minutes, id]
+    );
+    return rows.length > 0 ? mapRow(rows[0]) : null;
+  }
+
+  /** STOP desde "Mensaje a ti mismo": busca el chat a pausar por número (si `query` tiene 7+
+   * dígitos) o, si no, por nombre exacto (sin distinguir mayúsculas). Puede devolver varios. */
+  static async findForStop(userId: number, query: string): Promise<{ jid: string; name: string }[]> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const digits = query.replace(/[^0-9]/g, '');
+    if (digits.length >= 7) {
+      const { rows } = await db.query(
+        `SELECT jid, name FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND is_group = false
+           AND (jid = $3 OR split_part(jid, '@', 1) LIKE '%' || $4) ORDER BY last_activity DESC LIMIT 5`,
+        [userId, ownerJid, `${digits}@s.whatsapp.net`, digits.slice(-10)]
+      );
+      return rows;
+    }
+    const { rows } = await db.query(
+      `SELECT jid, name FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND lower(trim(name)) = lower(trim($3))
+       ORDER BY last_activity DESC LIMIT 5`,
+      [userId, ownerJid, query]
+    );
+    return rows;
   }
 
   /** ¿El bot está pausado para este contacto o grupo por un STOP del asesor? */

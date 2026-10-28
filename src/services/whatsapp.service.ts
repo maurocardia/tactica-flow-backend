@@ -1081,7 +1081,38 @@ return connectPromise;
     // AdvisorService.handleAdvisorCommand). El mensaje se borra "para todos" para que el cliente no
     // vea la palabra, no se guarda en la conversación, y la confirmación va a "Mensaje a ti mismo".
     const ownerJid = WhatsappService.getOwnerJid(userId);
-    if (fromMe && user && ownerJid && remoteJid !== ownerJid && botContactJid !== ownerJid) {
+    const ownerLid = (socket.user as any)?.lid ? jidNormalizedUser((socket.user as any).lid) : null;
+    const isSelfChat = !isGroup && !!ownerJid && [remoteJid, botContactJid].some((j) => j === ownerJid || (!!ownerLid && j === ownerLid));
+
+    // STOP desde "Mensaje a ti mismo": "STOP 573001234567" o "STOP Nombre del contacto" pausa el
+    // bot para ese chat sin escribir nada en el chat del cliente (él no ve nada).
+    if (fromMe && user && ownerJid && isSelfChat) {
+      const { AdvisorService, formatDuration } = await import('./advisor.service.js');
+      const stopConfig = await AdvisorService.getStopCommandConfig(userId);
+      const trimmed = text.trim();
+      if (stopConfig.keyword && trimmed.toLowerCase().startsWith(stopConfig.keyword + ' ')) {
+        const target = trimmed.slice(stopConfig.keyword.length).trim();
+        try {
+          const matches = await BotContactService.findForStop(userId, target);
+          let reply: string;
+          if (matches.length === 1) {
+            await BotContactService.pauseBotFor(userId, matches[0].jid, stopConfig.minutes);
+            trace('DUENO_STOP', { usuario: userId, cliente: matches[0].jid, minutos: stopConfig.minutes, desde: 'mensaje a ti mismo' });
+            reply = `⏸️ Listo: el bot queda pausado para *${matches[0].name}* durante ${formatDuration(stopConfig.minutes)}.`;
+          } else if (matches.length === 0) {
+            reply = `No encontré ningún chat con "${target}". Escribí el número completo (ej: ${stopConfig.keyword.toUpperCase()} 573001234567) o el nombre tal cual aparece.`;
+          } else {
+            reply = `Hay varios chats que coinciden con "${target}": ${matches.map((m) => m.name).join(', ')}. Usá el número completo.`;
+          }
+          await sendWithRetry(socket, remoteJid, { text: reply }, 'stop→dueño');
+        } catch (err) {
+          console.error('⚠️ [WhatsApp] Error aplicando el STOP desde "Mensaje a ti mismo":', err);
+        }
+        return;
+      }
+    }
+
+    if (fromMe && user && ownerJid && !isSelfChat) {
       const { AdvisorService, formatDuration } = await import('./advisor.service.js');
       const stopConfig = await AdvisorService.getStopCommandConfig(userId);
       if (stopConfig.keyword && text.trim().toLowerCase() === stopConfig.keyword) {
