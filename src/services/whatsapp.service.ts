@@ -469,6 +469,7 @@ FlowEngineService.setProactiveSender(async (ctx) => {
   const session = sessions.get(ctx.userId);
   if (!session || session.status !== 'connected') return;
   if (EmergencyStopService.isActive(ctx.userId)) return;
+  if (await BotContactService.isBotPaused(ctx.userId, ctx.botContactJid)) return;
 
   // Mismo chequeo que handleIncomingMessage antes de responder — si el usuario bloqueó al
   // contacto o apagó el bot DESDE que se armó este temporizador, no corresponde mandarle nada igual.
@@ -1031,34 +1032,9 @@ return connectPromise;
       }
     }
 
-    // Comando STOP: el cliente pide que el bot deje de escribirle — solo en chats individuales (en
-    // un grupo bot_enabled es del GRUPO entero, no de un participante puntual, así que una sola
-    // persona no puede apagarlo para todos). Va ANTES de crear la conversación/bot_contacts: no
-    // hace falta que quede guardado como si fuera una consulta normal.
-    if (!isGroup && !fromMe && !emergencyStopped && user) {
-      const stopKeyword = (user.stopCommandKeyword || 'STOP').trim().toLowerCase();
-      if (stopKeyword && text.trim().toLowerCase() === stopKeyword) {
-        const stopJid = canonicalIndividualJid || remoteJid;
-        try {
-          await BotContactService.stopBotFor(userId, stopJid, user.stopCommandMinutes);
-          trace('STOP_COMANDO', { usuario: userId, cliente: phone, minutos: user.stopCommandMinutes });
-        } catch (err) {
-          console.error('⚠️ [WhatsApp] Error aplicando el comando STOP:', err);
-        }
-        try {
-          const stopReplyText = WelcomeMessageService.renderStopMessage(
-            user.stopCommandMessage,
-            user.stopCommandKeyword || 'STOP',
-            user.stopCommandMinutes,
-            user.resumeCommandKeyword || 'INICIAR'
-          );
-          await sendWithRetry(socket, remoteJid, { text: stopReplyText }, 'stop→cliente');
-        } catch (err) {
-          console.error('⚠️ [WhatsApp] No se pudo confirmar el comando STOP:', err);
-        }
-        return;
-      }
-    }
+    // El comando STOP ya no lo escribe el cliente sino el asesor, dentro del puente — ver
+    // AdvisorService.handleAdvisorCommand (más arriba) y BotContactService.pauseBotFor. Un cliente
+    // que escribe "STOP" es un mensaje más.
 
     // Comando de reactivación (contracara del STOP, apagado por default): el cliente escribe esta
     // palabra y el bot vuelve a prenderse para él, sea cual sea el motivo por el que estaba
@@ -1281,6 +1257,18 @@ return connectPromise;
     if (!user?.botEnabled) {
       trace('SIN_RESPUESTA', { usuario: userId, cliente: phone, msgId: msg.key?.id, motivo: 'bot apagado en la cuenta' });
       return;
+    }
+
+    // Pausa por STOP de un asesor (ver BotContactService.pauseBotFor): gana aunque esté "Responder
+    // a todos", por eso va antes de ese chequeo. Va después del puente: el asesor sigue hablando
+    // con el cliente mientras dura la pausa.
+    try {
+      if (await BotContactService.isBotPaused(userId, botContactJid)) {
+        trace('SIN_RESPUESTA', { usuario: userId, cliente: phone, msgId: msg.key?.id, motivo: 'bot pausado por un asesor (STOP)' });
+        return;
+      }
+    } catch (err) {
+      console.error('⚠️ [WhatsApp] Error chequeando la pausa por STOP:', err);
     }
 
     // "Responder a todos" vs "Responder a contactos seleccionados": con el modo "todos" activado

@@ -138,7 +138,12 @@ export class BotContactService {
   }
 
   static async setEnabled(id: number, enabled: boolean): Promise<BotContact | null> {
-    const { rows } = await db.query('UPDATE bot_contacts SET bot_enabled = $1 WHERE id = $2 RETURNING *', [enabled, id]);
+    // Prenderlo a mano desde el panel también levanta una pausa por STOP del asesor que siga vigente.
+    const { rows } = await db.query(
+      `UPDATE bot_contacts SET bot_enabled = $1, bot_stopped_until = CASE WHEN $1 THEN NULL ELSE bot_stopped_until END
+       WHERE id = $2 RETURNING *`,
+      [enabled, id]
+    );
     return rows.length > 0 ? mapRow(rows[0]) : null;
   }
 
@@ -500,37 +505,47 @@ export class BotContactService {
     return rowCount ?? 0;
   }
 
-  /** Comando STOP del cliente (ver WhatsappService.handleIncomingMessage): apaga el bot para este
-   * contacto puntual — mismo campo `bot_enabled` que el switch manual del panel, así que un admin
-   * lo puede prender de nuevo a mano en cualquier momento sin esperar. `minutes <= 0` = permanente
-   * (bot_stopped_until queda NULL, nadie lo reactiva solo). */
-  static async stopBotFor(userId: number, jid: string, minutes: number): Promise<void> {
+  /** Comando STOP del asesor (ver AdvisorService.handleAdvisorCommand): pausa el bot para este
+   * contacto o grupo durante `minutes`. Usa solo bot_stopped_until, sin tocar el switch
+   * `bot_enabled` del panel — así la pausa vale también con "Responder a todos" activado, y al
+   * vencer no prende el switch de alguien que lo tenía apagado a propósito. */
+  static async pauseBotFor(userId: number, jid: string, minutes: number): Promise<void> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';
-    const stoppedUntil = minutes > 0 ? new Date(Date.now() + minutes * 60 * 1000) : null;
     await db.query(
-      `UPDATE bot_contacts SET bot_enabled = false, bot_stopped_until = $1
+      `UPDATE bot_contacts SET bot_stopped_until = now() + ($1 || ' minutes')::interval
        WHERE user_id = $2 AND owner_jid = $3 AND jid = $4`,
-      [stoppedUntil, userId, ownerJid, jid]
+      [minutes, userId, ownerJid, jid]
     );
   }
 
-  /** Comando de reactivación del cliente (contracara de stopBotFor): vuelve a prender el bot para
-   * este contacto puntual, sea cual sea el motivo por el que estaba apagado (STOP o switch manual
-   * del panel) — mismo campo `bot_enabled`. */
+  /** ¿El bot está pausado para este contacto o grupo por un STOP del asesor? */
+  static async isBotPaused(userId: number, jid: string): Promise<boolean> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query(
+      `SELECT 1 FROM bot_contacts WHERE user_id = $1 AND owner_jid = $2 AND (jid = $3 OR lid = $3) AND bot_stopped_until > now() LIMIT 1`,
+      [userId, ownerJid, jid]
+    );
+    return rows.length > 0;
+  }
+
+  /** Comando de reactivación del cliente: vuelve a prender el switch del bot para este contacto
+   * puntual si estaba apagado. NO levanta una pausa por STOP del asesor (bot_stopped_until): esa la
+   * decidió alguien del equipo y el cliente no la puede deshacer. */
   static async resumeBotFor(userId: number, jid: string): Promise<void> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';
     await db.query(
-      `UPDATE bot_contacts SET bot_enabled = true, bot_stopped_until = NULL
+      `UPDATE bot_contacts SET bot_enabled = true
        WHERE user_id = $1 AND owner_jid = $2 AND jid = $3`,
       [userId, ownerJid, jid]
     );
   }
 
-  /** Sweep periódico (ver AdvisorQueueWorker): reactiva a todo contacto cuyo apagado por STOP ya
-   * venció. Devuelve cuántos reactivó. */
+  /** Sweep periódico (ver AdvisorQueueWorker): limpia las pausas por STOP que ya vencieron. La
+   * pausa ya no aplica sola al vencer (ver isBotPaused); esto solo deja la columna prolija. No
+   * toca `bot_enabled`: la pausa nunca lo cambió. Devuelve cuántas limpió. */
   static async reactivateExpiredStops(): Promise<number> {
     const { rowCount } = await db.query(
-      `UPDATE bot_contacts SET bot_enabled = true, bot_stopped_until = NULL
+      `UPDATE bot_contacts SET bot_stopped_until = NULL
        WHERE bot_stopped_until IS NOT NULL AND bot_stopped_until <= now()`
     );
     return rowCount ?? 0;

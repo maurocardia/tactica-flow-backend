@@ -30,7 +30,7 @@ export class AdvisorQueueWorker {
         await AdvisorQueueWorker.sendDueReminders();
         await AdvisorQueueWorker.promoteFreeAdvisors();
         // Reactiva a quien se autoapagó con el comando STOP y configuró horas (no permanente) —
-        // ver BotContactService.stopBotFor.
+        // ver BotContactService.pauseBotFor.
         const reactivated = await BotContactService.reactivateExpiredStops();
         if (reactivated > 0) trace('STOP_REACTIVADOS', { cantidad: reactivated });
       } catch (err) {

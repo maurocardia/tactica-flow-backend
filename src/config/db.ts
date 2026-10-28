@@ -485,6 +485,11 @@ const SCHEMA_SQL = `
   -- minutos por el mismo motivo que welcome_inactivity_minutes arriba.
   ALTER TABLE users ADD COLUMN IF NOT EXISTS stop_command_keyword TEXT NOT NULL DEFAULT 'STOP';
   ALTER TABLE users ADD COLUMN IF NOT EXISTS stop_command_minutes INT NOT NULL DEFAULT 0;
+  -- El STOP pasó a ser un comando del ASESOR (no del cliente) que pausa el bot para su cliente por
+  -- un tiempo — ver AdvisorService.handleAdvisorCommand/BotContactService.pauseBotFor. Ya no hay
+  -- "permanente": default 1 hora, y el 0 que dejó la versión anterior se lleva a 60.
+  ALTER TABLE users ALTER COLUMN stop_command_minutes SET DEFAULT 60;
+  UPDATE users SET stop_command_minutes = 60 WHERE stop_command_minutes <= 0;
   -- Mensaje que recibe el cliente al activar el STOP. Vacío = DEFAULT_STOP_COMMAND_MESSAGE. Admite
   -- los placeholders {palabra} y {tiempo} (ver WelcomeMessageService.renderStopMessage).
   ALTER TABLE users ADD COLUMN IF NOT EXISTS stop_command_message TEXT NOT NULL DEFAULT '';

@@ -457,10 +457,11 @@ router.put('/welcome-message', async (req: Request, res: Response) => {
   }
 });
 
-// Comando STOP: el cliente escribe la palabra clave y el bot se apaga para ese contacto puntual
-// (ver BotContactService.stopBotFor). `minutes = 0` = permanente, hasta que lo reactiven a mano.
+// Comando STOP del asesor: escribe la palabra clave en el puente y el bot queda pausado para su
+// cliente durante `minutes` (ver AdvisorService.handleAdvisorCommand). `message` ya no se usa (era
+// el aviso al cliente cuando el STOP lo escribía él); se sigue aceptando para no romper el panel.
 const STOP_COMMAND_KEYWORD_MAX_LEN = 50;
-const STOP_COMMAND_MINUTES_MIN = 0;
+const STOP_COMMAND_MINUTES_MIN = 1;
 const STOP_COMMAND_MINUTES_MAX = 525600; // 1 año
 router.put('/stop-command', async (req: Request, res: Response) => {
   const { keyword, minutes, message } = req.body;

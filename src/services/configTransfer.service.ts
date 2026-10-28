@@ -59,7 +59,7 @@ const SETTINGS: SettingDef[] = [
   { key: 'welcomeMessageText', column: 'welcome_message_text', type: 'text' },
   { key: 'welcomeInactivityMinutes', column: 'welcome_inactivity_minutes', type: 'int', min: 1, max: 43200 },
   { key: 'stopCommandKeyword', column: 'stop_command_keyword', type: 'text' },
-  { key: 'stopCommandMinutes', column: 'stop_command_minutes', type: 'int', min: 0, max: 525600 },
+  { key: 'stopCommandMinutes', column: 'stop_command_minutes', type: 'int', min: 1, max: 525600 },
   { key: 'stopCommandMessage', column: 'stop_command_message', type: 'text' },
   { key: 'resumeCommandEnabled', column: 'resume_command_enabled', type: 'boolean' },
   { key: 'resumeCommandKeyword', column: 'resume_command_keyword', type: 'text' },

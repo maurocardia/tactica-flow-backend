@@ -32,6 +32,13 @@ function mapRow(row: any): Advisor {
   };
 }
 
+/** "45 minutos", "1 hora", "2 días" — para los avisos al asesor. */
+function formatDuration(minutes: number): string {
+  if (minutes % 1440 === 0) return minutes === 1440 ? '1 día' : `${minutes / 1440} días`;
+  if (minutes % 60 === 0) return minutes === 60 ? '1 hora' : `${minutes / 60} horas`;
+  return minutes === 1 ? '1 minuto' : `${minutes} minutos`;
+}
+
 // Contador de derivaciones apagado (users.advisor_counter_enabled = false, ver panel de
 // Asesores): no se suma nada y el reparto es por orden de lista, sin mirar cuántos casos atendió
 // cada uno. $1 es siempre el userId en las consultas que usan estos fragmentos.
@@ -224,6 +231,18 @@ export class AdvisorService {
     const { AuthService } = await import('./auth.service.js');
     const user = await AuthService.getUserById(userId);
     return user?.relayInactivityMinutes ?? AdvisorService.DEFAULT_RELAY_INACTIVITY_MINUTES;
+  }
+
+  /** Palabra (en minúsculas, comparación sin distinguir mayúsculas) y duración en minutos del
+   * comando STOP que el asesor escribe para pausar el bot para su cliente — ver
+   * handleAdvisorCommand y el modal "Mensaje de bienvenida" del panel. */
+  static async getStopCommandConfig(userId: number): Promise<{ keyword: string; minutes: number }> {
+    const { AuthService } = await import('./auth.service.js');
+    const user = await AuthService.getUserById(userId);
+    return {
+      keyword: (user?.stopCommandKeyword || 'STOP').trim().toLowerCase(),
+      minutes: user && user.stopCommandMinutes > 0 ? user.stopCommandMinutes : 60,
+    };
   }
 
   static readonly DEFAULT_FINISH_KEYWORDS = 'FIN,LISTO';
@@ -894,6 +913,13 @@ export class AdvisorService {
 
     const { BotContactService } = await import('./botContact.service.js');
     const activeClient = await BotContactService.getActiveClientForAdvisor(userId, advisor.id);
+    const stopConfig = await AdvisorService.getStopCommandConfig(userId);
+    const isStopCommand = !media && stopConfig.keyword !== '' && text.trim().toLowerCase() === stopConfig.keyword;
+    if (!activeClient && isStopCommand) {
+      // STOP sin nadie asignado: no hay a quién pausarle el bot — se le avisa en vez de ignorarlo.
+      await AdvisorService.replyToAdvisor(userId, advisor, 'No tenés ningún cliente asignado ahora, así que no hay a quién pausarle el bot.');
+      return true;
+    }
     if (!activeClient) {
       // El que escribe ES un asesor, pero no tiene cliente asignado ahora: NO se reenvía a nadie y
       // el mensaje sigue de largo solo para guardarse en la conversación — el bot no le contesta
@@ -910,6 +936,21 @@ export class AdvisorService {
     if (!media && finishKeywords.includes(trimmed)) {
       trace('ASESOR_FIN', { usuario: userId, asesor: advisor.name, cliente: activeClientJid });
       await AdvisorService.requestCloseConfirmation(userId, activeClientJid, advisor);
+      return true;
+    }
+
+    // Comando STOP del asesor: pausa el bot SOLO para el cliente (o grupo) que está atendiendo, por
+    // el tiempo configurado (ver BotContactService.pauseBotFor). Nunca se le reenvía al cliente —
+    // él no se entera de la palabra —, el asesor recibe la confirmación, y el puente sigue abierto
+    // igual: la pausa es para lo que venga después de cerrar la atención.
+    if (isStopCommand) {
+      await BotContactService.pauseBotFor(userId, activeClientJid, stopConfig.minutes);
+      trace('ASESOR_STOP', { usuario: userId, asesor: advisor.name, cliente: activeClientJid, minutos: stopConfig.minutes });
+      await AdvisorService.replyToAdvisor(
+        userId,
+        advisor,
+        `⏸️ Listo: el bot queda pausado para *${activeClient.name || activeClientJid.split('@')[0]}* durante ${formatDuration(stopConfig.minutes)}. El cliente no recibió nada de esto.`
+      );
       return true;
     }
 
