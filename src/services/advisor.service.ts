@@ -32,8 +32,8 @@ function mapRow(row: any): Advisor {
   };
 }
 
-/** "45 minutos", "1 hora", "2 días" — para los avisos al asesor. */
-function formatDuration(minutes: number): string {
+/** "45 minutos", "1 hora", "2 días" — para los avisos al asesor y al dueño. */
+export function formatDuration(minutes: number): string {
   if (minutes % 1440 === 0) return minutes === 1440 ? '1 día' : `${minutes / 1440} días`;
   if (minutes % 60 === 0) return minutes === 60 ? '1 hora' : `${minutes / 60} horas`;
   return minutes === 1 ? '1 minuto' : `${minutes} minutos`;

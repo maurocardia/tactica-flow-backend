@@ -1072,9 +1072,40 @@ return connectPromise;
     // Capturado ANTES de upsert() (que la pisa a "ahora") — lo usa la bienvenida en grupos más
     // abajo para saber si el GRUPO entero venía inactivo (ver WelcomeMessageService/getLastActivity).
     const groupLastActivityBefore = isGroup ? await BotContactService.getLastActivity(userId, botContactJid) : null;
-    BotContactService.upsert(userId, botContactJid, botContactName, isGroup, new Date(), user?.botEnabledForNewContacts ?? false).catch((err) => {
+    const botContactSynced = BotContactService.upsert(userId, botContactJid, botContactName, isGroup, new Date(), user?.botEnabledForNewContacts ?? false).catch((err) => {
       console.error(`⚠️ [WhatsApp] Error sincronizando bot_contacts para ${botContactJid}:`, err);
     });
+
+    // Comando STOP escrito desde la cuenta del bot (el dueño, desde el teléfono o WhatsApp Web) en
+    // el chat de un cliente o grupo: pausa el bot para ese chat, igual que el STOP del asesor (ver
+    // AdvisorService.handleAdvisorCommand). El mensaje se borra "para todos" para que el cliente no
+    // vea la palabra, no se guarda en la conversación, y la confirmación va a "Mensaje a ti mismo".
+    const ownerJid = WhatsappService.getOwnerJid(userId);
+    if (fromMe && user && ownerJid && remoteJid !== ownerJid && botContactJid !== ownerJid) {
+      const { AdvisorService, formatDuration } = await import('./advisor.service.js');
+      const stopConfig = await AdvisorService.getStopCommandConfig(userId);
+      if (stopConfig.keyword && text.trim().toLowerCase() === stopConfig.keyword) {
+        try {
+          await socket.sendMessage(remoteJid, { delete: msg.key });
+        } catch (err) {
+          console.error('⚠️ [WhatsApp] No se pudo borrar el STOP del dueño:', err);
+        }
+        try {
+          await botContactSynced;
+          const name = await BotContactService.pauseBotFor(userId, botContactJid, stopConfig.minutes);
+          trace('DUENO_STOP', { usuario: userId, cliente: botContactJid, minutos: stopConfig.minutes });
+          await sendWithRetry(
+            socket,
+            ownerJid,
+            { text: `⏸️ Listo: el bot queda pausado para *${name || botContactName}* durante ${formatDuration(stopConfig.minutes)}.` },
+            'stop→dueño'
+          );
+        } catch (err) {
+          console.error('⚠️ [WhatsApp] Error aplicando el STOP del dueño:', err);
+        }
+        return;
+      }
+    }
 
     // Si el mensaje lo envió el asesor humano o desde el teléfono/WhatsApp Web, lo guardamos como 'agent' y salimos
     if (fromMe) {

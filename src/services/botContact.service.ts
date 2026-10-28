@@ -509,13 +509,14 @@ export class BotContactService {
    * contacto o grupo durante `minutes`. Usa solo bot_stopped_until, sin tocar el switch
    * `bot_enabled` del panel — así la pausa vale también con "Responder a todos" activado, y al
    * vencer no prende el switch de alguien que lo tenía apagado a propósito. */
-  static async pauseBotFor(userId: number, jid: string, minutes: number): Promise<void> {
+  static async pauseBotFor(userId: number, jid: string, minutes: number): Promise<string | null> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';
-    await db.query(
+    const { rows } = await db.query(
       `UPDATE bot_contacts SET bot_stopped_until = now() + ($1 || ' minutes')::interval
-       WHERE user_id = $2 AND owner_jid = $3 AND jid = $4`,
+       WHERE user_id = $2 AND owner_jid = $3 AND jid = $4 RETURNING name`,
       [minutes, userId, ownerJid, jid]
     );
+    return rows[0]?.name ?? null;
   }
 
   /** ¿El bot está pausado para este contacto o grupo por un STOP del asesor? */
