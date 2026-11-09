@@ -7,6 +7,7 @@ import { AdvisorService } from '../services/advisor.service.js';
 import { FlowMediaService } from '../services/flowMedia.service.js';
 import { EmergencyStopService } from '../services/emergencyStop.service.js';
 import { ConfigTransferService } from '../services/configTransfer.service.js';
+import { parseSchedule, isValidTimezone, OFF_HOURS_MESSAGE_MAX_LEN } from '../services/businessHours.service.js';
 import {
   WELCOME_MESSAGE_MAX_LEN,
   WELCOME_INACTIVITY_MINUTES_MIN,
@@ -197,6 +198,63 @@ router.put('/ai-prompt-config', async (req: Request, res: Response) => {
 // Enciende/apaga que un contacto NUEVO (que escribe por primera vez, todavía no está en
 // bot_contacts) arranque con el switch de bot ya prendido en vez de apagado por default — ver
 // WhatsappService.handleIncomingMessage / BotContactService.upsert.
+// Horario de atención (ver BusinessHoursService): fuera de horario el bot no responde. Incluye el
+// aviso opcional fuera de horario.
+router.put('/business-hours', async (req: Request, res: Response) => {
+  const { enabled, schedule, timezone, offHoursEnabled, offHoursText } = req.body;
+  if (typeof enabled !== 'boolean' || typeof offHoursEnabled !== 'boolean') {
+    return res.status(400).json({ error: '"enabled" y "offHoursEnabled" deben ser true o false' });
+  }
+  if (typeof timezone !== 'string' || !isValidTimezone(timezone)) return res.status(400).json({ error: 'Zona horaria inválida' });
+  if (typeof offHoursText !== 'string' || offHoursText.length > OFF_HOURS_MESSAGE_MAX_LEN) {
+    return res.status(400).json({ error: `El aviso fuera de horario puede tener hasta ${OFF_HOURS_MESSAGE_MAX_LEN} caracteres` });
+  }
+  const parsed = parseSchedule(schedule);
+  if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+  try {
+    const user = await AuthService.setBusinessHours(req.user!.id, {
+      enabled,
+      schedule: parsed.schedule,
+      timezone,
+      offHoursEnabled,
+      offHoursText: offHoursText.trim(),
+    });
+    res.json({
+      businessHoursEnabled: user?.businessHoursEnabled ?? enabled,
+      businessHours: user?.businessHours ?? parsed.schedule,
+      businessHoursTimezone: user?.businessHoursTimezone ?? timezone,
+      offHoursMessageEnabled: user?.offHoursMessageEnabled ?? offHoursEnabled,
+      offHoursMessageText: user?.offHoursMessageText ?? offHoursText.trim(),
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al guardar el horario' });
+  }
+});
+
+// Interruptor general "Bot en grupos".
+router.put('/groups-bot-enabled', async (req: Request, res: Response) => {
+  const { enabled } = req.body;
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: '"enabled" debe ser true o false' });
+  try {
+    const user = await AuthService.setGroupsBotEnabled(req.user!.id, enabled);
+    res.json({ groupsBotEnabled: user?.groupsBotEnabled ?? enabled });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar "Bot en grupos"' });
+  }
+});
+
+// "Pausar la IA cuando escribe un asesor".
+router.put('/advisor-pause', async (req: Request, res: Response) => {
+  const { enabled } = req.body;
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: '"enabled" debe ser true o false' });
+  try {
+    const user = await AuthService.setAdvisorPauseEnabled(req.user!.id, enabled);
+    res.json({ advisorPauseEnabled: user?.advisorPauseEnabled ?? enabled });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar la pausa por asesor' });
+  }
+});
+
 router.put('/bot-enabled-for-new-contacts', async (req: Request, res: Response) => {
   const { enabled } = req.body;
   if (typeof enabled !== 'boolean') {
@@ -668,6 +726,19 @@ router.delete('/bot-contacts/:id', async (req: Request, res: Response) => {
     res.json({ status: 'deleted' });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error al borrar el contacto' });
+  }
+});
+
+// Botones "Prender todos" / "Apagar todos" de la pestaña Grupos: cambia el switch de todos los
+// grupos de la cuenta conectada de una vez.
+router.post('/bot-contacts/groups/enabled', async (req: Request, res: Response) => {
+  const { enabled } = req.body;
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: '"enabled" debe ser true o false' });
+  try {
+    const updated = await BotContactService.setAllGroupsEnabled(req.user!.id, enabled);
+    res.json({ updated });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error al actualizar los grupos' });
   }
 });
 

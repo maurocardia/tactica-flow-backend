@@ -29,6 +29,8 @@ export interface BotContact {
   // Pausa por STOP (del asesor, del dueño o del botón "Pausar bot" del panel): mientras sea una
   // fecha futura el bot no le responde. null/vencida = sin pausa. Ver pauseBotFor/isBotPaused.
   botPausedUntil: string | null;
+  // Quién puso esa pausa: nombre del asesor, "Dueño", o null (botón del panel).
+  botPausedBy: string | null;
 }
 
 export interface GatingFlags {
@@ -52,6 +54,7 @@ function mapRow(row: any): BotContact {
     handoffExpiresAt: row.handoff_expires_at ? new Date(row.handoff_expires_at).toISOString() : null,
     botPausedUntil:
       row.bot_stopped_until && new Date(row.bot_stopped_until) > new Date() ? new Date(row.bot_stopped_until).toISOString() : null,
+    botPausedBy: row.bot_stopped_until && new Date(row.bot_stopped_until) > new Date() ? (row.bot_stopped_by ?? null) : null,
   };
 }
 
@@ -514,12 +517,12 @@ export class BotContactService {
    * contacto o grupo durante `minutes`. Usa solo bot_stopped_until, sin tocar el switch
    * `bot_enabled` del panel — así la pausa vale también con "Responder a todos" activado, y al
    * vencer no prende el switch de alguien que lo tenía apagado a propósito. */
-  static async pauseBotFor(userId: number, jid: string, minutes: number): Promise<string | null> {
+  static async pauseBotFor(userId: number, jid: string, minutes: number, by: string | null = null): Promise<string | null> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';
     const { rows } = await db.query(
-      `UPDATE bot_contacts SET bot_stopped_until = now() + ($1 || ' minutes')::interval
+      `UPDATE bot_contacts SET bot_stopped_until = now() + ($1 || ' minutes')::interval, bot_stopped_by = $5
        WHERE user_id = $2 AND owner_jid = $3 AND jid = $4 RETURNING name`,
-      [minutes, userId, ownerJid, jid]
+      [minutes, userId, ownerJid, jid, by]
     );
     return rows[0]?.name ?? null;
   }
@@ -528,7 +531,8 @@ export class BotContactService {
    * (minutes > 0) o levanta la pausa (minutes = null), por id de fila. */
   static async setPauseById(id: number, minutes: number | null): Promise<BotContact | null> {
     const { rows } = await db.query(
-      `UPDATE bot_contacts SET bot_stopped_until = CASE WHEN $1::int IS NULL THEN NULL ELSE now() + ($1::int || ' minutes')::interval END
+      `UPDATE bot_contacts SET bot_stopped_until = CASE WHEN $1::int IS NULL THEN NULL ELSE now() + ($1::int || ' minutes')::interval END,
+         bot_stopped_by = NULL
        WHERE id = $2 RETURNING *`,
       [minutes, id]
     );
@@ -554,6 +558,31 @@ export class BotContactService {
       [userId, ownerJid, query]
     );
     return rows;
+  }
+
+  /** Botones "Prender todos" / "Apagar todos" de la pestaña Grupos. Prender también levanta las
+   * pausas por STOP/asesor vigentes, igual que el switch individual (ver setEnabled). */
+  static async setAllGroupsEnabled(userId: number, enabled: boolean): Promise<number> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rowCount } = await db.query(
+      `UPDATE bot_contacts SET bot_enabled = $1, bot_stopped_until = CASE WHEN $1 THEN NULL ELSE bot_stopped_until END
+       WHERE user_id = $2 AND owner_jid = $3 AND is_group = true`,
+      [enabled, userId, ownerJid]
+    );
+    return rowCount ?? 0;
+  }
+
+  /** Aviso fuera de horario: ¿ya se le mandó a este chat después de `since` (el último cierre)?
+   * Si no, lo marca como enviado ahora y devuelve true (hay que mandarlo). */
+  static async claimOffHoursNotice(userId: number, jid: string, since: Date | null): Promise<boolean> {
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rowCount } = await db.query(
+      `UPDATE bot_contacts SET off_hours_notified_at = now()
+       WHERE user_id = $1 AND owner_jid = $2 AND jid = $3
+         AND (off_hours_notified_at IS NULL OR ($4::timestamptz IS NOT NULL AND off_hours_notified_at < $4::timestamptz))`,
+      [userId, ownerJid, jid, since]
+    );
+    return (rowCount ?? 0) > 0;
   }
 
   /** ¿El bot está pausado para este contacto o grupo por un STOP del asesor? */

@@ -1,6 +1,7 @@
 import { OAuth2Client } from 'google-auth-library';
 import jwt from 'jsonwebtoken';
 import { db } from '../config/db.js';
+import { DEFAULT_TIMEZONE, type WeeklySchedule } from './businessHours.service.js';
 
 export interface GoogleTokenPayload {
   sub: string;
@@ -137,6 +138,16 @@ export interface User {
    * esta palabra con el bot apagado, se lo vuelve a prender — ver BotContactService.resumeBotFor. */
   resumeCommandEnabled: boolean;
   resumeCommandKeyword: string;
+  /** Horario de atención — ver BusinessHoursService. */
+  businessHoursEnabled: boolean;
+  businessHours: WeeklySchedule;
+  businessHoursTimezone: string;
+  offHoursMessageEnabled: boolean;
+  offHoursMessageText: string;
+  /** Interruptor general "Bot en grupos" (true = respeta el switch de cada grupo). */
+  groupsBotEnabled: boolean;
+  /** Pausar el bot en un grupo cuando escribe un asesor. */
+  advisorPauseEnabled: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -183,6 +194,13 @@ function mapUserRow(row: any): User {
     stopCommandMessage: row.stop_command_message ?? '',
     resumeCommandEnabled: row.resume_command_enabled ?? false,
     resumeCommandKeyword: row.resume_command_keyword ?? 'INICIAR',
+    businessHoursEnabled: row.business_hours_enabled ?? false,
+    businessHours: row.business_hours ?? {},
+    businessHoursTimezone: row.business_hours_timezone ?? DEFAULT_TIMEZONE,
+    offHoursMessageEnabled: row.off_hours_message_enabled ?? false,
+    offHoursMessageText: row.off_hours_message_text ?? '',
+    groupsBotEnabled: row.groups_bot_enabled ?? true,
+    advisorPauseEnabled: row.advisor_pause_enabled ?? true,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -261,6 +279,31 @@ export class AuthService {
       `UPDATE users SET ai_custom_instructions = $1, updated_at = now() WHERE id = $2 RETURNING *`,
       [aiCustomInstructions, id]
     );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setBusinessHours(
+    id: number,
+    config: { enabled: boolean; schedule: WeeklySchedule; timezone: string; offHoursEnabled: boolean; offHoursText: string }
+  ): Promise<User | null> {
+    const { rows } = await db.query(
+      `UPDATE users SET business_hours_enabled = $1, business_hours = $2::jsonb, business_hours_timezone = $3,
+         off_hours_message_enabled = $4, off_hours_message_text = $5, updated_at = now() WHERE id = $6 RETURNING *`,
+      [config.enabled, JSON.stringify(config.schedule), config.timezone, config.offHoursEnabled, config.offHoursText, id]
+    );
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setGroupsBotEnabled(id: number, enabled: boolean): Promise<User | null> {
+    const { rows } = await db.query(`UPDATE users SET groups_bot_enabled = $1, updated_at = now() WHERE id = $2 RETURNING *`, [enabled, id]);
+    if (rows.length === 0) return null;
+    return mapUserRow(rows[0]);
+  }
+
+  static async setAdvisorPauseEnabled(id: number, enabled: boolean): Promise<User | null> {
+    const { rows } = await db.query(`UPDATE users SET advisor_pause_enabled = $1, updated_at = now() WHERE id = $2 RETURNING *`, [enabled, id]);
     if (rows.length === 0) return null;
     return mapUserRow(rows[0]);
   }

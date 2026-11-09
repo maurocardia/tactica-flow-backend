@@ -63,6 +63,13 @@ const SETTINGS: SettingDef[] = [
   { key: 'stopCommandMessage', column: 'stop_command_message', type: 'text' },
   { key: 'resumeCommandEnabled', column: 'resume_command_enabled', type: 'boolean' },
   { key: 'resumeCommandKeyword', column: 'resume_command_keyword', type: 'text' },
+  { key: 'businessHoursEnabled', column: 'business_hours_enabled', type: 'boolean' },
+  { key: 'businessHours', column: 'business_hours', type: 'json' },
+  { key: 'businessHoursTimezone', column: 'business_hours_timezone', type: 'text' },
+  { key: 'offHoursMessageEnabled', column: 'off_hours_message_enabled', type: 'boolean' },
+  { key: 'offHoursMessageText', column: 'off_hours_message_text', type: 'text' },
+  { key: 'groupsBotEnabled', column: 'groups_bot_enabled', type: 'boolean' },
+  { key: 'advisorPauseEnabled', column: 'advisor_pause_enabled', type: 'boolean' },
 ];
 
 const RULE_ACTIONS = ['STATIC_REPLY', 'CALL_AI', 'TACTICA_STOCK_LOOKUP', 'CREATE_SUPPORT_TICKET', 'HANDOFF', 'DELAY', 'WEBHOOK'];

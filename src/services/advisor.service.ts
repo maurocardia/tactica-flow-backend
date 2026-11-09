@@ -108,6 +108,17 @@ export class AdvisorService {
   /** ¿Este teléfono es de alguien cargado como asesor, esté activo o no? — para que el bot no le
    * responda (ver WhatsappService.handleIncomingMessage). A diferencia de findByPhone, no mira
    * is_active: ese switch decide si se le derivan clientes, no si es parte del equipo. */
+  /** Nombre del asesor (activo o no) con este teléfono, o null si no es asesor. */
+  static async advisorNameByPhone(userId: number, phone: string): Promise<string | null> {
+    const digits = phone.replace(/[^0-9]/g, '');
+    if (!digits) return null;
+    const { rows } = await db.query(
+      `SELECT name FROM advisors WHERE user_id = $1 AND regexp_replace(phone, '[^0-9]', '', 'g') = $2 LIMIT 1`,
+      [userId, digits]
+    );
+    return rows.length > 0 ? (rows[0].name ?? '') : null;
+  }
+
   static async isAdvisorPhone(userId: number, phone: string): Promise<boolean> {
     const digits = phone.replace(/[^0-9]/g, '');
     if (!digits) return false;
@@ -944,7 +955,7 @@ export class AdvisorService {
     // él no se entera de la palabra —, el asesor recibe la confirmación, y el puente sigue abierto
     // igual: la pausa es para lo que venga después de cerrar la atención.
     if (isStopCommand) {
-      await BotContactService.pauseBotFor(userId, activeClientJid, stopConfig.minutes);
+      await BotContactService.pauseBotFor(userId, activeClientJid, stopConfig.minutes, advisor.name);
       trace('ASESOR_STOP', { usuario: userId, asesor: advisor.name, cliente: activeClientJid, minutos: stopConfig.minutes });
       await AdvisorService.replyToAdvisor(
         userId,

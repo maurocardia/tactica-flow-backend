@@ -6,6 +6,7 @@ import { ConversationService } from './conversation.service.js';
 import { BotContactService } from './botContact.service.js';
 import { BotEngineService } from './botEngine.service.js';
 import { AuthService } from './auth.service.js';
+import { BusinessHoursService } from './businessHours.service.js';
 import { AIService } from './ai.service.js';
 import { KnowledgeBaseService } from './knowledgeBase.service.js';
 import { usePostgresAuthState } from './postgresAuthState.js';
@@ -477,6 +478,8 @@ FlowEngineService.setProactiveSender(async (ctx) => {
   if (gating.isBlacklisted) return;
   const user = await AuthService.getUserById(ctx.userId);
   if (!user?.botEnabled) return;
+  if (ctx.isGroup && !user.groupsBotEnabled) return;
+  if (!BusinessHoursService.isOpen(user.businessHoursEnabled, user.businessHours, user.businessHoursTimezone)) return;
   if (!user.botReplyToAll && !gating.botEnabled) return;
 
   await sendFlowMessages(ctx.userId, session.socket, ctx.remoteJid, ctx.messages, {
@@ -1096,7 +1099,7 @@ return connectPromise;
           const matches = await BotContactService.findForStop(userId, target);
           let reply: string;
           if (matches.length === 1) {
-            await BotContactService.pauseBotFor(userId, matches[0].jid, stopConfig.minutes);
+            await BotContactService.pauseBotFor(userId, matches[0].jid, stopConfig.minutes, 'Dueño');
             trace('DUENO_STOP', { usuario: userId, cliente: matches[0].jid, minutos: stopConfig.minutes, desde: 'mensaje a ti mismo' });
             reply = `⏸️ Listo: el bot queda pausado para *${matches[0].name}* durante ${formatDuration(stopConfig.minutes)}.`;
           } else if (matches.length === 0) {
@@ -1123,7 +1126,7 @@ return connectPromise;
         }
         try {
           await botContactSynced;
-          const name = await BotContactService.pauseBotFor(userId, botContactJid, stopConfig.minutes);
+          const name = await BotContactService.pauseBotFor(userId, botContactJid, stopConfig.minutes, 'Dueño');
           trace('DUENO_STOP', { usuario: userId, cliente: botContactJid, minutos: stopConfig.minutes });
           await sendWithRetry(
             socket,
@@ -1288,7 +1291,17 @@ return connectPromise;
     if (senderDigits) {
       try {
         const { AdvisorService } = await import('./advisor.service.js');
-        if (await AdvisorService.isAdvisorPhone(userId, senderDigits)) {
+        const advisorName = await AdvisorService.advisorNameByPhone(userId, senderDigits);
+        if (advisorName !== null) {
+          // "Pausar la IA cuando escribe un asesor": en un grupo, un asesor que habla directo (sin
+          // derivación de por medio) pausa el bot para ese grupo por el tiempo del STOP; cada
+          // mensaje suyo reinicia la cuenta. Nadie recibe aviso.
+          if (isGroup && user?.advisorPauseEnabled) {
+            const { minutes } = await AdvisorService.getStopCommandConfig(userId);
+            await botContactSynced;
+            await BotContactService.pauseBotFor(userId, botContactJid, minutes, advisorName || 'Asesor');
+            trace('ASESOR_PAUSA_GRUPO', { usuario: userId, grupo: botContactJid, asesor: advisorName, minutos: minutes });
+          }
           trace('SIN_RESPUESTA', { usuario: userId, cliente: phone, msgId: msg.key?.id, motivo: 'el que escribe es un asesor' });
           return;
         }
@@ -1321,6 +1334,13 @@ return connectPromise;
       return;
     }
 
+    // Interruptor general "Bot en grupos": apagado, el bot no responde en ningún grupo (sin tocar
+    // el switch de cada uno).
+    if (isGroup && !user.groupsBotEnabled) {
+      trace('SIN_RESPUESTA', { usuario: userId, cliente: phone, msgId: msg.key?.id, motivo: 'bot apagado en grupos (interruptor general)' });
+      return;
+    }
+
     // Pausa por STOP de un asesor (ver BotContactService.pauseBotFor): gana aunque esté "Responder
     // a todos", por eso va antes de ese chequeo. Va después del puente: el asesor sigue hablando
     // con el cliente mientras dura la pausa.
@@ -1340,6 +1360,37 @@ return connectPromise;
     // guardado tal cual entre sesiones de Baileys (no se resetea solo).
     if (!user.botReplyToAll && !gating.botEnabled) {
       trace('SIN_RESPUESTA', { usuario: userId, cliente: phone, msgId: msg.key?.id, motivo: 'bot apagado para este contacto' });
+      return;
+    }
+
+    // Horario de atención (ver BusinessHoursService): fuera de horario el bot no responde. Con el
+    // aviso activado, en chats individuales se manda UNA vez por período cerrado (no en grupos,
+    // donde le llegaría a todos).
+    if (!BusinessHoursService.isOpen(user.businessHoursEnabled, user.businessHours, user.businessHoursTimezone)) {
+      trace('SIN_RESPUESTA', { usuario: userId, cliente: phone, msgId: msg.key?.id, motivo: 'fuera de horario' });
+      if (!isGroup && user.offHoursMessageEnabled) {
+        try {
+          await botContactSynced;
+          const since = BusinessHoursService.lastClosedAt(user.businessHours, user.businessHoursTimezone);
+          if (await BotContactService.claimOffHoursNotice(userId, botContactJid, since)) {
+            const offText = BusinessHoursService.renderOffHoursMessage(user.offHoursMessageText, plainContactName);
+            trace('AVISO_FUERA_DE_HORARIO', { usuario: userId, cliente: phone, texto: preview(offText) });
+            if (user.botReplyDelayEnabled) {
+              await humanDelay(socket, remoteJid, offText, user.botReplyDelayMinMs, user.botReplyDelayMaxMs);
+            }
+            if (!EmergencyStopService.isActive(userId)) {
+              await sendWithRetry(socket, remoteJid, { text: offText }, 'fuera-de-horario→cliente');
+              const offOutbound = await ConversationService.addMessage(conversation.id, 'bot', offText);
+              if (offOutbound) {
+                io.to(`chat_${conversation.id}`).emit('new_message', offOutbound.message);
+                io.emit('conversation_updated', offOutbound.conversation);
+              }
+            }
+          }
+        } catch (err) {
+          console.error('⚠️ [WhatsApp] No se pudo mandar el aviso fuera de horario:', err);
+        }
+      }
       return;
     }
 

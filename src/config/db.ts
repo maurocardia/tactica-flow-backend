@@ -505,6 +505,30 @@ const SCHEMA_SQL = `
   -- bot_enabled porque ese campo también lo toca el usuario a mano desde el panel; esta columna es
   -- solo para que el worker sepa a quién reactivar solo cuando corresponde.
   ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS bot_stopped_until TIMESTAMPTZ;
+  -- Quién puso la pausa vigente (nombre del asesor, "Dueño" o NULL si fue el botón del panel) —
+  -- solo para mostrarlo en la tarjeta del chat.
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS bot_stopped_by TEXT;
+
+  -- Horario de atención (ver BusinessHoursService): fuera de horario el bot no responde.
+  -- business_hours = {"mon":[{"from":"09:00","to":"13:00"}, ...], ...}; día ausente o vacío = cerrado.
+  -- Apagado por default: nadie cambia de comportamiento hasta que lo active en el panel.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS business_hours_enabled BOOLEAN NOT NULL DEFAULT false;
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS business_hours JSONB NOT NULL DEFAULT '{}'::jsonb;
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS business_hours_timezone TEXT NOT NULL DEFAULT 'America/Argentina/Buenos_Aires';
+  -- Aviso opcional fuera de horario (solo chats individuales, una vez por período cerrado — ver
+  -- bot_contacts.off_hours_notified_at). Vacío = DEFAULT_OFF_HOURS_MESSAGE.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS off_hours_message_enabled BOOLEAN NOT NULL DEFAULT false;
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS off_hours_message_text TEXT NOT NULL DEFAULT '';
+  ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS off_hours_notified_at TIMESTAMPTZ;
+
+  -- Interruptor general "Bot en grupos": apagado = el bot no responde en ningún grupo, sin tocar el
+  -- switch de cada grupo. Columna nueva (no la vieja bot_groups_enabled, que nunca se usó y
+  -- arrancaba en false) para que arranque PRENDIDO y no le cambie nada a nadie.
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS groups_bot_enabled BOOLEAN NOT NULL DEFAULT true;
+
+  -- "Pausar la IA cuando escribe un asesor": si alguien cargado como asesor escribe en un grupo, el
+  -- bot se pausa ahí por stop_command_minutes (ver WhatsappService.handleIncomingMessage).
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS advisor_pause_enabled BOOLEAN NOT NULL DEFAULT true;
 
   -- Adjuntos multimedia de los bloques de flujo (Enviar Imagen/Video/Audio/Documento). Los bytes
   -- se guardan acá y se cargan en proceso para pasárselos a Baileys como Buffer — así no hace
