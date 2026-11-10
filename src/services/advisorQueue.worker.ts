@@ -33,6 +33,7 @@ export class AdvisorQueueWorker {
         // ver BotContactService.pauseBotFor.
         const reactivated = await BotContactService.reactivateExpiredStops();
         if (reactivated > 0) trace('STOP_REACTIVADOS', { cantidad: reactivated });
+        await BotContactService.pruneMessageChats();
       } catch (err) {
         console.error('❌ [AdvisorQueueWorker] Error inesperado en ciclo de evaluación:', err);
       } finally {

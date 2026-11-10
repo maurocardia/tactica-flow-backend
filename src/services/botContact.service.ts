@@ -585,6 +585,34 @@ export class BotContactService {
     return (rowCount ?? 0) > 0;
   }
 
+  /** Registra a qué chat pertenece un mensaje (ver tabla wa_message_chats). */
+  static async rememberMessageChat(userId: number, msgId: string, jid: string): Promise<void> {
+    await db.query(
+      `INSERT INTO wa_message_chats (user_id, msg_id, jid) VALUES ($1, $2, $3) ON CONFLICT (user_id, msg_id) DO NOTHING`,
+      [userId, msgId, jid]
+    );
+  }
+
+  /** Tarjeta del chat: dado los ids de mensajes que se ven en pantalla, el contacto/grupo al que
+   * pertenecen (el del mensaje más reciente que se conozca), o null. */
+  static async findByMessageIds(userId: number, msgIds: string[]): Promise<BotContact | null> {
+    if (!msgIds.length) return null;
+    const ownerJid = WhatsappService.getOwnerJid(userId) || '';
+    const { rows } = await db.query(
+      `SELECT b.* FROM wa_message_chats m
+         JOIN bot_contacts b ON b.user_id = m.user_id AND b.owner_jid = $3 AND b.jid = m.jid
+       WHERE m.user_id = $1 AND m.msg_id = ANY($2::text[])
+       ORDER BY m.created_at DESC LIMIT 1`,
+      [userId, msgIds, ownerJid]
+    );
+    return rows.length > 0 ? mapRow(rows[0]) : null;
+  }
+
+  /** Limpieza periódica de wa_message_chats (ver AdvisorQueueWorker). */
+  static async pruneMessageChats(): Promise<void> {
+    await db.query(`DELETE FROM wa_message_chats WHERE created_at < now() - interval '14 days'`);
+  }
+
   /** ¿El bot está pausado para este contacto o grupo por un STOP del asesor? */
   static async isBotPaused(userId: number, jid: string): Promise<boolean> {
     const ownerJid = WhatsappService.getOwnerJid(userId) || '';

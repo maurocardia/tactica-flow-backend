@@ -509,6 +509,18 @@ const SCHEMA_SQL = `
   -- solo para mostrarlo en la tarjeta del chat.
   ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS bot_stopped_by TEXT;
 
+  -- A qué chat pertenece cada mensaje de WhatsApp (id del mensaje -> jid del contacto/grupo). WhatsApp
+  -- Web ya no pone el jid del chat en el data-id de los mensajes, así que la tarjeta del chat del
+  -- panel manda los ids que ve en pantalla y el backend le dice qué chat es. Se borra a los 14 días.
+  CREATE TABLE IF NOT EXISTS wa_message_chats (
+    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    msg_id TEXT NOT NULL,
+    jid TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, msg_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_wa_message_chats_created_at ON wa_message_chats(created_at);
+
   -- Horario de atención (ver BusinessHoursService): fuera de horario el bot no responde.
   -- business_hours = {"mon":[{"from":"09:00","to":"13:00"}, ...], ...}; día ausente o vacío = cerrado.
   -- Apagado por default: nadie cambia de comportamiento hasta que lo active en el panel.

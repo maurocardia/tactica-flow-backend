@@ -1078,6 +1078,11 @@ return connectPromise;
     const botContactSynced = BotContactService.upsert(userId, botContactJid, botContactName, isGroup, new Date(), user?.botEnabledForNewContacts ?? false).catch((err) => {
       console.error(`⚠️ [WhatsApp] Error sincronizando bot_contacts para ${botContactJid}:`, err);
     });
+    if (msg.key?.id) {
+      BotContactService.rememberMessageChat(userId, msg.key.id, botContactJid).catch((err) => {
+        console.error('⚠️ [WhatsApp] Error registrando el chat del mensaje:', err);
+      });
+    }
 
     // Comando STOP escrito desde la cuenta del bot (el dueño, desde el teléfono o WhatsApp Web) en
     // el chat de un cliente o grupo: pausa el bot para ese chat, igual que el STOP del asesor (ver

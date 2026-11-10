@@ -742,6 +742,20 @@ router.post('/bot-contacts/groups/enabled', async (req: Request, res: Response) 
   }
 });
 
+// Tarjeta del chat: qué contacto/grupo es el chat abierto, a partir de los ids de los mensajes que
+// se ven en pantalla (WhatsApp Web ya no expone el jid del chat en el DOM).
+router.post('/bot-contacts/by-message-ids', async (req: Request, res: Response) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids) || ids.length > 50 || !ids.every((x) => typeof x === 'string' && x.length > 0 && x.length < 200)) {
+    return res.status(400).json({ error: '"ids" debe ser una lista de hasta 50 ids de mensaje' });
+  }
+  try {
+    res.json(await BotContactService.findByMessageIds(req.user!.id, ids));
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error buscando el chat' });
+  }
+});
+
 router.put('/bot-contacts/:id/enabled', async (req: Request, res: Response) => {
   const { enabled } = req.body;
   if (typeof enabled !== 'boolean') {
